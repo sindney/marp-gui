@@ -1002,6 +1002,7 @@ void TextEditor::Render()
 						ImVec2 cstart(textScreenPos.x + cx, lineStartScreenPos.y);
 						ImVec2 cend(textScreenPos.x + cx + width, lineStartScreenPos.y + mCharAdvance.y);
 						drawList->AddRectFilled(cstart, cend, mPalette[(int)PaletteIndex::Cursor]);
+						mCaretScreenPos = cstart; // marp-gui: expose caret for IME anchoring
 						if (elapsed > 800)
 							mStartTime = timeEnd;
 					}

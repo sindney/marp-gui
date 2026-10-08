@@ -218,6 +218,11 @@ public:
 	Coordinates GetCursorPosition() const { return GetActualCursorCoordinates(); }
 	void SetCursorPosition(const Coordinates& aPosition);
 
+	// marp-gui: screen-space caret rect, captured each frame when the cursor is
+	// drawn. Used to anchor the OS IME candidate window at the caret.
+	// Valid only after Render() has run at least once with the cursor visible.
+	ImVec2 GetCaretScreenPos() const { return mCaretScreenPos; }
+	float GetCaretHeight() const { return mCharAdvance.y; }
 
 	inline void SetHandleMouseInputs    (bool aValue){ mHandleMouseInputs    = aValue;}
 	inline bool IsHandleMouseInputsEnabled() const { return mHandleKeyboardInputs; }
@@ -366,6 +371,7 @@ private:
 	bool mColorizerEnabled;
 	float mTextStart;                   // position (in pixels) where a code line starts relative to the left of the TextEditor.
 	int  mLeftMargin;
+	ImVec2 mCaretScreenPos = ImVec2(0, 0); // marp-gui: last drawn caret top-left (screen space)
 	bool mCursorPositionChanged;
 	int mColorRangeMin, mColorRangeMax;
 	SelectionMode mSelectionMode;

@@ -898,6 +898,16 @@ int main(int argc, char *argv[]) {
         ImGui::BeginChild("editor-pane", ImVec2(editorW, 0), true);
         app.editor.Render("editor");
 
+        // Position the IME candidate window at the editor caret. The vendored
+        // TextEditor records the exact caret rect when it draws the cursor
+        // (GetCaretScreenPos), so this is pixel-exact — no approximation.
+        {
+            ImGuiContext &g = *ImGui::GetCurrentContext();
+            g.PlatformImeData.WantVisible = true;
+            g.PlatformImeData.WantTextInput = true;
+            g.PlatformImeData.InputPos = app.editor.GetCaretScreenPos();
+            g.PlatformImeData.InputLineHeight = app.editor.GetCaretHeight();
+        }
         if (app.editor.IsTextChanged()) {
             // text changed
             app.dirtySinceLastSave = true;
