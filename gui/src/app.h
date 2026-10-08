@@ -59,3 +59,7 @@ struct App {
 // Slide map helpers (defined in main.cpp).
 std::vector<int> SlideStarts(const std::string &text);
 int SlideForLine(const std::vector<int> &starts, int line);
+
+// Deck lifecycle (defined in main.cpp).
+void LoadDeck(App &app);
+void SwitchDeck(App &app);

@@ -14,6 +14,7 @@
 #include "markdown_lang.h"
 #include "command_palette.h"
 #include "log.h"
+#include "crash.h"
 #include "app.h"
 
 #ifdef _WIN32
@@ -123,13 +124,16 @@ public:
     }
 
     // Point the worker at a different deck/theme (on deck open or theme switch)
-    // and queue a rebuild.
+    // and queue a rebuild. std::mutex is non-recursive, so bump the counters
+    // under one lock — do NOT call Request() (it would re-lock and throw).
     void Retarget(std::string deck, std::string theme) {
         std::lock_guard<std::mutex> lk(mu_);
         deck_ = std::move(deck);
         theme_ = std::move(theme);
         ++generation_;
-        Request(); // also bumps requestGen_
+        ++requestGen_;   // same as Request(), inline — we're already holding mu_
+        pending_ = true;
+        cv_.notify_all();
     }
 
     bool Building() const {
@@ -287,7 +291,7 @@ static std::string ReadFile(const fs::path &p) {
     return ss.str();
 }
 
-static void LoadDeck(App &app) {
+void LoadDeck(App &app) {
     std::string text = ReadFile(app.deckPath);
     app.editor.SetText(text);
     app.slideStarts = SlideStarts(text);
@@ -298,7 +302,7 @@ static void LoadDeck(App &app) {
 
 // Point everything at a (possibly new) deck + theme and force a fresh build.
 // Clears the old preview so a stale render never shows against the new deck.
-static void SwitchDeck(App &app) {
+void SwitchDeck(App &app) {
     ++app.buildGeneration;
     LoadDeck(app);
     app.cursorSlide = 0;
@@ -426,6 +430,8 @@ static bool SaveFileDialog(HWND owner, char *outPath, size_t outSize, const char
 
 
 int main(int argc, char *argv[]) {
+    mg::InstallCrashHandler(); // log + minidump on unhandled exception/abort
+
     // --- App state ------------------------------------------------------------
     App app;
     app.deckPath = fs::absolute(argc > 1 ? argv[1] : "slides.md");

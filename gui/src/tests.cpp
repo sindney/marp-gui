@@ -7,6 +7,8 @@
 #include "themes.h"
 #include "markdown_lang.h"
 
+#include <fstream>
+
 #include "imgui.h"
 #include "imgui_te_engine.h"
 #include "imgui_te_context.h"
@@ -130,6 +132,34 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
             IM_CHECK(now.find("中文标题") != std::string::npos);
             IM_CHECK(now.find("Unicode") != std::string::npos);
             a.editor.SetText(before.c_str()); // restore
+        };
+    }
+
+    // --- SwitchDeck mid-session doesn't crash ---------------------------------------
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "switch_deck");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            // Build a foreign deck with an image reference, in a temp dir.
+            fs::path dir = fs::temp_directory_path() / "marp_switch_test";
+            std::error_code ec;
+            fs::create_directories(dir, ec);
+            fs::path deck = dir / "other.md";
+            {
+                std::ofstream f(deck);
+                f << "---\nmarp: true\n---\n\n# Foreign\n\n![bg](images/x.png)\n";
+            }
+            fs::path origDeck = a.deckPath;
+            a.deckPath = deck;
+            SwitchDeck(a);                 // the exact File→Open path
+            ctx->Yield(5);                 // let a few frames render the new deck
+            IM_CHECK(a.deckPath == deck);
+            IM_CHECK(a.slides.empty() || a.slides.size() > 0); // just don't crash
+            // restore
+            a.deckPath = origDeck;
+            SwitchDeck(a);
+            ctx->Yield(3);
         };
     }
 

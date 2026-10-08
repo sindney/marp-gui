@@ -59,7 +59,7 @@ target_include_directories(marp_gui PRIVATE
     ${TEXTEDIT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
-target_link_libraries(marp_gui PRIVATE imgui SDL3::SDL3 opengl32)
+target_link_libraries(marp_gui PRIVATE imgui SDL3::SDL3 opengl32 dbghelp)
 if (MSVC)
     target_compile_options(marp_gui PRIVATE /utf-8)
 endif()
@@ -101,7 +101,7 @@ target_include_directories(marp_gui_tests PRIVATE
     ${TEXTEDIT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
-target_link_libraries(marp_gui_tests PRIVATE imgui_te SDL3::SDL3 opengl32)
+target_link_libraries(marp_gui_tests PRIVATE imgui_te SDL3::SDL3 opengl32 dbghelp)
 target_compile_definitions(marp_gui_tests PRIVATE MARP_GUI_TESTS)
 if (MSVC)
     target_compile_options(marp_gui_tests PRIVATE /utf-8)

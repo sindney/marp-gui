@@ -1,7 +1,14 @@
-# Build output
+# Build output (any dir named build*, plus marp output dirs)
 build/
+build-*/
+**/build/
+**/build-*/
 .build/
 .gui-build/
+
+# Crash dumps
+crash/
+**/crash/
 
 # Dependencies / generated
 node_modules/
