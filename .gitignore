@@ -1,0 +1,17 @@
+# Build output
+build/
+.build/
+.gui-build/
+
+# Dependencies / generated
+node_modules/
+
+# Editor / OS noise
+*.user
+imgui.ini
+Thumbs.db
+.DS_Store
+
+# AI tooling (local agent state)
+.claude/
+.codex/

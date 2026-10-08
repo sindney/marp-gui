@@ -1,0 +1,250 @@
+/* @theme programmer */
+
+@import 'default';
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap');
+
+:root {
+  /* dark "programmer" palette */
+  --color-background: #1e1e1e;   /* VS Code dark editor */
+  --color-foreground: #d4d4d4;
+  --color-highlight: #569cd6;    /* keyword blue */
+  --color-accent: #4ec9b0;       /* class teal */
+  --color-warm: #ce9178;         /* string orange */
+  --color-dim: #858585;
+  --color-band: #252526;         /* title bar */
+  --color-border: #3c3c3c;
+  --color-code-bg: #2d2d2d;
+
+  /* marp's code blocks use highlight.js "prettylights" CSS vars — override
+     them with the VS Code dark palette so code matches the theme. */
+  --color-prettylights-syntax-comment: #6a9955;
+  --color-prettylights-syntax-constant: #4ec9b0;        /* numbers/literals */
+  --color-prettylights-syntax-entity: #4ec9b0;          /* function/class names */
+  --color-prettylights-syntax-storage-modifier-import: #569cd6;
+  --color-prettylights-syntax-entity-tag: #569cd6;
+  --color-prettylights-syntax-keyword: #569cd6;         /* keywords */
+  --color-prettylights-syntax-string: #ce9178;          /* strings */
+  --color-prettylights-syntax-variable: #9cdcfe;        /* variables */
+  --color-prettylights-syntax-brackethighlighter-unmatched: #f44747;
+  --color-prettylights-syntax-invalid-illegal-text: #f44747;
+  --color-prettylights-syntax-carriage-return-text: #858585;
+  --color-prettylights-syntax-string-regexp: #d16969;
+  --color-prettylights-syntax-markup-list: #6796e6;
+  --color-prettylights-syntax-markup-heading: #569cd6;
+  --color-prettylights-syntax-markup-italic: #d4d4d4;
+  --color-prettylights-syntax-markup-bold: #ffffff;
+  --color-prettylights-syntax-markup-deleted-text: #f44747;
+  --color-prettylights-syntax-markup-inserted-text: #b5cea8;
+  --color-prettylights-syntax-markup-changed-text: #dcdcaa;
+  --color-prettylights-syntax-markup-ignored-text: #858585;
+
+  font-family: 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+}
+
+section {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+
+  /* top padding clears the absolutely-positioned header band (see below) */
+  padding: 90px 48px 48px 48px;
+  font-size: 30px;
+  line-height: 1.5;
+
+  /* header/footer live at the very top/bottom, full-bleed */
+  position: relative;
+}
+
+/* ---------------------------------------------------------------------------
+   Header band: absolutely positioned so it spans the FULL slide width,
+   ignoring section padding (this is how gaia does it; the old academic.css
+   used negative in-flow margins which misaligned the band).
+--------------------------------------------------------------------------- */
+header,
+footer,
+section::after {
+  box-sizing: border-box;
+  position: absolute;
+  overflow: hidden;
+}
+
+header {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  padding: 0 48px;
+
+  display: flex;
+  align-items: center;
+
+  background-color: var(--color-band);
+  border-bottom: 1px solid var(--color-border);
+  border-left: 6px solid var(--color-highlight);
+
+  color: var(--color-highlight);
+  font-size: 24px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+
+  z-index: 5; /* stay above background images */
+}
+
+footer {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 34px;
+  padding: 0 48px;
+  display: flex;
+  align-items: center;
+  color: var(--color-dim);
+  font-size: 18px;
+  background-color: var(--color-band);
+  border-top: 1px solid var(--color-border);
+}
+
+/* pagination: "1 / 2" bottom-right (must reference data-marpit-pagination) */
+section::after {
+  content: attr(data-marpit-pagination) ' / ' attr(data-marpit-pagination-total);
+  right: 0;
+  bottom: 0;
+  height: 34px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  font-size: 18px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  color: var(--color-dim);
+  pointer-events: none;
+}
+
+/* keep first block from colliding with the header band */
+section > *:first-child,
+section > header:first-child + * {
+  margin-top: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Typography
+-------------------------------------------------------------------------- */
+h1, h2, h3, h4, h5, h6 {
+  color: var(--color-highlight);
+  font-weight: 700;
+}
+h1 { font-size: 1.6em; }
+h2 { font-size: 1.3em; color: var(--color-accent); }
+
+strong { color: #ffffff; }
+em { color: var(--color-accent); font-style: normal; }
+
+a { color: var(--color-highlight); }
+
+mark {
+  background-color: transparent;
+  color: var(--color-warm);
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+}
+
+ul ul, ol ol {
+  font-size: 0.9em;
+}
+
+li::marker {
+  color: var(--color-highlight);
+}
+
+blockquote {
+  max-width: 90%;
+  border: none;
+  border-top: 1px dashed var(--color-dim);
+  padding: 4px 0 0 0;
+  margin: 0;
+  font-size: 55%;
+  line-height: 1.35;
+  color: var(--color-dim);
+  position: absolute;
+  bottom: 40px;
+  left: 48px;
+}
+blockquote::before,
+blockquote::after {
+  content: "";
+}
+
+/* --------------------------------------------------------------------------
+   Code
+-------------------------------------------------------------------------- */
+code {
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+  background-color: var(--color-code-bg);
+  color: var(--color-warm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0 0.25em;
+  font-size: 0.9em;
+}
+
+pre {
+  background-color: var(--color-code-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 16px 20px;
+}
+pre code {
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  color: var(--color-foreground);
+}
+
+/* --------------------------------------------------------------------------
+   Tables
+-------------------------------------------------------------------------- */
+table {
+  border-collapse: collapse;
+}
+th, td {
+  border: 1px solid var(--color-border);
+  padding: 0.3em 0.6em;
+}
+th {
+  background-color: var(--color-band);
+  color: var(--color-accent);
+}
+
+/* --------------------------------------------------------------------------
+   Lead (title) slide
+-------------------------------------------------------------------------- */
+section.lead {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 48px;
+}
+section.lead h1,
+section.lead h2,
+section.lead h3,
+section.lead h4,
+section.lead h5,
+section.lead h6 {
+  color: var(--color-highlight);
+  text-align: left;
+}
+section.lead p {
+  text-align: left;
+  color: var(--color-foreground);
+}
+
+/* --------------------------------------------------------------------------
+   Helpers
+-------------------------------------------------------------------------- */
+img[alt~="center"] {
+  display: block;
+  margin: 0 auto;
+}

@@ -1,0 +1,4 @@
+// Application icon resource — Marp logo (from https://marp.app/favicon.png)
+#include <windows.h>
+
+IDI_ICON1 ICON "assets/marp.ico"
