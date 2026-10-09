@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Force the process ANSI/UTF-8 code page to UTF-8 (65001) on Windows 10 1903+.
+
+  Why: on systems whose ANSI code page is not UTF-8 (e.g. cp936/GBK on a Chinese
+  locale, cp932 on Japanese), std::filesystem::path built from a UTF-8 narrow
+  string decodes via the ANSI code page and produces mojibake filenames
+  (测试 -> 娴嬭瘯), and .string() re-encodes paths back through the same lossy
+  layer. The spawned marp/node child inherits the same code page, so it cannot
+  stat any deck path containing non-ASCII characters — preview and export fail
+  with "Not found processable Markdown file(s)". Declaring UTF-8 here fixes the
+  narrow-string <-> path conversions process-wide and is inherited by the child.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application>
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

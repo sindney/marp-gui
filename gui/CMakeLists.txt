@@ -128,7 +128,12 @@ if (MSVC)
     # minidump resolve to function/file/line. Symbols are separate .pdb files,
     # so this costs nothing at runtime.
     target_compile_options(marp_gui PRIVATE /Zi)
-    target_link_options(marp_gui PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+    # Merge the UTF-8 activeCodePage manifest with the linker's auto-generated
+    # one (embedding it via resource.rc would duplicate RT_MANIFEST and fail
+    # CVTRES). Fixes narrow-string std::filesystem conversions and the spawned
+    # marp/node child on non-UTF-8 ANSI code pages (cp936/cp932/...).
+    target_link_options(marp_gui PRIVATE /DEBUG /OPT:REF /OPT:ICF
+        "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/utf8.manifest")
 endif()
 
 # Resolve the executable (including bundle/configuration paths) through CMake.
@@ -219,7 +224,8 @@ endif()
 target_compile_definitions(marp_gui_tests PRIVATE MARP_GUI_TESTS)
 if (MSVC)
     target_compile_options(marp_gui_tests PRIVATE /utf-8 /Zi)
-    target_link_options(marp_gui_tests PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+    target_link_options(marp_gui_tests PRIVATE /DEBUG /OPT:REF /OPT:ICF
+        "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/utf8.manifest")
 endif()
 
 enable_testing()
