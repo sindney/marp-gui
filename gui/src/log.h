@@ -134,7 +134,8 @@ private:
     std::ofstream m_FileStream;
     bool m_FileOutput = false;
     LogFormatter m_Formatter = Formatter::Default;
-    LogLevel m_LogLevel = LogLevel::DBUG;
+    // Default INFO: DBUG (verbose, e.g. shutdown timings) hidden unless enabled.
+    LogLevel m_LogLevel = LogLevel::INFO;
     LogSink m_ExtraSink;
 };
 

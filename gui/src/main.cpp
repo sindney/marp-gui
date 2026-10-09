@@ -367,6 +367,17 @@ void SwitchDeck(App &app) {
         app.worker->Retarget(app.deckPath.string(), app.themePath.string());
 }
 
+// Unified slide navigation — see app.h. Sets viewSlide (clamped) and asks the
+// thumbnail strip to center the selected slide.
+void SetViewSlide(App &app, int slide) {
+    int total = (int)app.slides.size();
+    int clamped = total > 0 ? (std::max)(0, (std::min)(slide, total - 1)) : 0;
+    if (clamped != app.viewSlide) {
+        app.viewSlide = clamped;
+        app.centerThumbOnSync = true;
+    }
+}
+
 static void SaveDeck(App &app) {
     std::ofstream f(app.deckPath, std::ios::binary | std::ios::trunc);
     f << app.editor.GetText();
@@ -845,12 +856,8 @@ int main(int argc, char *argv[]) {
             case palette::Command::ExportHtml: ExportDeck(app, "html"); break;
             case palette::Command::Undo: if (app.editor.CanUndo()) app.editor.Undo(); break;
             case palette::Command::Redo: if (app.editor.CanRedo()) app.editor.Redo(); break;
-            case palette::Command::NextSlide:
-                if (app.viewSlide < (int)app.slides.size() - 1) ++app.viewSlide;
-                break;
-            case palette::Command::PrevSlide:
-                if (app.viewSlide > 0) --app.viewSlide;
-                break;
+            case palette::Command::NextSlide: SetViewSlide(app, app.viewSlide + 1); break;
+            case palette::Command::PrevSlide: SetViewSlide(app, app.viewSlide - 1); break;
             case palette::Command::Settings: app.showSettings = true; break;
             case palette::Command::About:    app.showAbout = true; break;
             case palette::Command::Exit:     running = false; break;
@@ -984,16 +991,14 @@ int main(int argc, char *argv[]) {
         }
         // Cursor -> slide sync: only when the cursor actually MOVED (click/keys).
         // This lets the preview browse freely until you click a line again.
-        static bool centerThumb = false;
         {
             auto pos = app.editor.GetCursorPosition();
             if (pos.mLine != app.lastCursorLine) {
                 app.lastCursorLine = pos.mLine;
                 int slide = SlideForLine(app.slideStarts, pos.mLine);
-                if (slide < (int)app.slides.size() && slide != app.viewSlide) {
+                if (slide < (int)app.slides.size()) {
                     app.cursorSlide = slide;
-                    app.viewSlide = slide;
-                    centerThumb = true; // scroll the strip to center this slide
+                    SetViewSlide(app, slide); // unified: sets view + centers thumb
                 }
             }
         }
@@ -1078,15 +1083,15 @@ int main(int argc, char *argv[]) {
 
                 ImGui::BeginChild("slide-main", ImVec2(0, mainH), false,
                                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-                // wheel + up/down navigate the viewed slide
+                // wheel + up/down navigate the viewed slide (unified: centers thumb)
                 if (ImGui::IsWindowHovered()) {
                     float wheel = ImGui::GetIO().MouseWheel;
-                    if (wheel > 0 && app.viewSlide > 0) --app.viewSlide;
-                    if (wheel < 0 && app.viewSlide < total - 1) ++app.viewSlide;
+                    if (wheel > 0) SetViewSlide(app, app.viewSlide - 1);
+                    if (wheel < 0) SetViewSlide(app, app.viewSlide + 1);
                 }
                 if (ImGui::IsWindowFocused()) {
-                    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) && app.viewSlide > 0) --app.viewSlide;
-                    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) && app.viewSlide < total - 1) ++app.viewSlide;
+                    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))   SetViewSlide(app, app.viewSlide - 1);
+                    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) SetViewSlide(app, app.viewSlide + 1);
                 }
                 {
                     // Scale to fit, preserving aspect ratio; grows with the pane.
@@ -1151,18 +1156,18 @@ int main(int argc, char *argv[]) {
                     ImVec2 thumbPos = ImGui::GetCursorScreenPos(); // for centering
                     if (ImGui::ImageButton("##thumb", (ImTextureID)(intptr_t)t->id,
                                            ImVec2(tw, thumbInnerH)))
-                        app.viewSlide = i;
+                        SetViewSlide(app, i); // unified
                     ImGui::PopStyleVar();
                     if (selected) ImGui::PopStyleColor();
-                    // keep the selected thumb centered when the editor cursor
-                    // snapped the view (cursor-follow sync)
-                    if (selected && centerThumb) {
+                    // center the selected thumb whenever any nav path asked for it
+                    // (caret sync, wheel, arrow keys, palette, thumb click)
+                    if (selected && app.centerThumbOnSync) {
                         float itemCenter = thumbPos.x + tw * 0.5f;
                         float stripCenter = ImGui::GetWindowPos().x +
                                             ImGui::GetWindowWidth() * 0.5f;
                         float target = ImGui::GetScrollX() + (itemCenter - stripCenter);
                         ImGui::SetScrollX((std::max)(0.0f, target));
-                        centerThumb = false;
+                        app.centerThumbOnSync = false;
                     }
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Slide %d", i + 1);

@@ -28,6 +28,7 @@ struct App {
     int cursorSlide = 0;                      // slide under the editor cursor
     int viewSlide = 0;                        // slide shown in the preview (free browsing)
     int lastCursorLine = -1;                  // for real cursor-move detection
+    bool centerThumbOnSync = false;           // set by SetViewSlide; strip centers the selected thumb
     std::vector<std::unique_ptr<SlideTexture>> slides;
 
     std::chrono::steady_clock::time_point lastEdit{};
@@ -63,3 +64,9 @@ int SlideForLine(const std::vector<int> &starts, int line);
 // Deck lifecycle (defined in main.cpp).
 void LoadDeck(App &app);
 void SwitchDeck(App &app);
+
+// Unified slide navigation: set the viewed slide (clamped) and request the
+// thumbnail strip center it. All page-turn paths (editor caret sync, wheel,
+// arrow keys, palette Next/Prev, thumbnail click) go through this so the
+// scroll-follow behavior is consistent.
+void SetViewSlide(App &app, int slide);
