@@ -22,3 +22,9 @@
 - [x] 4.2 Use direct CMake/CTest commands and a CMake run target for both generator types.
 - [x] 4.3 Reduce README to prerequisites, common commands, shortcuts, and credits.
 - [x] 4.4 Run the shared workflow and automation, verify launch, and update verification evidence without committing.
+
+## 5. Cross-platform ZIP installation
+
+- [x] 5.1 Embed default resources and select the static MSVC runtime for the single-executable Windows release.
+- [x] 5.2 Install only the application and create one ZIP automatically with the shared CMake install command.
+- [x] 5.3 Verify ZIP contents, extraction, standalone resource fallback, configuration handling, and automation; document the command and provide the macOS ZIP.

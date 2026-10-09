@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.24)
+
+string(TOLOWER "@MARP_RELEASE_CONFIGS@" release_configs)
+string(TOLOWER "${CMAKE_INSTALL_CONFIG_NAME}" release_config)
+if(release_configs AND NOT release_config IN_LIST release_configs)
+    message(FATAL_ERROR "Configuration '${CMAKE_INSTALL_CONFIG_NAME}' was not configured: ${release_configs}")
+endif()
+
+set(release_root "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+set(release_payload "@MARP_RELEASE_PAYLOAD@")
+set(release_zip "${release_root}/marp-gui-@MARP_RELEASE_PLATFORM@.zip")
+set(release_temporary "${release_zip}.tmp")
+set(release_executable "${release_root}/${release_payload}")
+if("@MARP_RELEASE_PLATFORM@" STREQUAL "macos")
+    string(APPEND release_executable "/Contents/MacOS/marp_gui")
+endif()
+if(NOT EXISTS "${release_executable}" OR IS_DIRECTORY "${release_executable}")
+    message(FATAL_ERROR "Build the application before installing: ${release_payload} is missing")
+endif()
+
+if("@MARP_RELEASE_PLATFORM@" STREQUAL "macos")
+    execute_process(COMMAND /usr/bin/ditto -c -k --sequesterRsrc --keepParent
+        "${release_root}/${release_payload}" "${release_temporary}"
+        RESULT_VARIABLE release_result ERROR_VARIABLE release_error)
+else()
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E tar cf "${release_temporary}" --format=zip -- "${release_payload}"
+        WORKING_DIRECTORY "${release_root}"
+        RESULT_VARIABLE release_result ERROR_VARIABLE release_error)
+endif()
+if(NOT release_result STREQUAL "0")
+    file(REMOVE "${release_temporary}")
+    message(FATAL_ERROR "ZIP creation failed (${release_result}): ${release_error}")
+endif()
+file(RENAME "${release_temporary}" "${release_zip}")
+message(STATUS "Release ZIP: ${release_zip}")

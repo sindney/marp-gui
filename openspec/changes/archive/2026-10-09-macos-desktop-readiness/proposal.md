@@ -11,6 +11,7 @@ The native editor currently assumes Windows for linking, process execution, font
 - Make CTest run against disposable decks; extend automation to cover rendering, shortcuts, exports, and process cancellation.
 - Centralize source platform detection behind `PLATFORM_WINDOWS` / `PLATFORM_MACOS`, following fury3d.
 - Provide one direct CMake configure/build/run and CTest workflow for both platforms and a compact README.
+- Generate a release ZIP during CMake installation, containing one macOS app or one Windows executable with built-in resources.
 - Document setup and capture actual visual verification evidence.
 
 ## Capabilities
@@ -25,4 +26,4 @@ The native editor currently assumes Windows for linking, process execution, font
 
 ## Impact
 
-Affected areas are `gui/CMakeLists.txt`, application startup, worker lifecycle, crash handling, the vendored editor shortcut handling, automation tests, and README. Existing SDL3, ImGui, nativefiledialog, and Marp dependencies remain; macOS uses Apple Clang and the system OpenGL framework. Signing, notarization, and release distribution are outside this change.
+Affected areas are `gui/CMakeLists.txt`, application startup, worker lifecycle, crash handling, the vendored editor shortcut handling, automation tests, and README. Existing SDL3, ImGui, nativefiledialog, and Marp dependencies remain; macOS uses Apple Clang and the system OpenGL framework. ZIP generation is included; signing, notarization, bundling Node/Marp/browser, and release publishing are outside this change.

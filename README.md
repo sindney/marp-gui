@@ -19,10 +19,13 @@ cmake -S gui -B gui/build -DCMAKE_BUILD_TYPE=Release
 cmake --build gui/build --config Release --parallel
 cmake --build gui/build --config Release --target run
 ctest --test-dir gui/build -C Release --output-on-failure
+cmake --install gui/build --config Release
 ```
 
 CMake fetches the C++ dependencies. `run` opens `slides.md`; use File → Open
 for another deck. Tests need an interactive desktop and the browser.
+Install creates `gui/build/dist/marp-gui-{macos,windows}.zip`, containing
+the `.app` or just the `.exe`. Node/Marp and the browser remain required.
 
 Use **Cmd** on macOS or **Ctrl** on Windows: **S** saves, **O** opens,
 **P** opens commands, **Z** undoes, and **Shift+Z** redoes.

@@ -71,8 +71,8 @@ recurses or attempts to acquire the normal logger's locks.
 Windows and Intel macOS were not executed on this arm64 host. Platform guards
 retain Windows resources, MSVC options, and dbghelp, and Windows uses owned
 job objects for child cleanup. Signing, notarization, and release publication
-remain outside this change. All source and OpenSpec changes are left
-uncommitted and the change remains active for review.
+remain outside this change. Source and OpenSpec changes were initially kept
+uncommitted for review before finalization.
 
 ## Shared build workflow follow-up
 
@@ -113,5 +113,59 @@ cmake --build gui/build --config Release --target run
   `.build/cmake-multi-*.log` files.
 - README is 37 lines and uses one command set for Windows and macOS.
 
-Windows runtime execution still requires a Windows host. Everything remains
-uncommitted for review.
+Windows runtime execution still requires a Windows host.
+
+## ZIP installation follow-up
+
+The initial implementation was committed and pushed as `2288b40`. This follow-up
+adds ZIP installation and built-in resources.
+
+```bash
+cmake --build gui/build --config Release --parallel
+cmake --install gui/build --config Release
+```
+
+- The install prefix defaults to the build directory's `dist/` for fresh
+  configurations. Existing build caches were explicitly updated from their old
+  default prefix. `--prefix` overrides are respected. `dist/` avoids colliding
+  with multi-config `Release/` directories on case-insensitive filesystems.
+- Created `gui/build/dist/marp-gui-macos.zip` (about 1.6 MiB) and the corresponding
+  ZIP under `gui/build-multi/dist/`. Both contain only the app bundle and macOS
+  archive metadata, with packaged theme, sample deck, logo, and icon; no tests,
+  source headers, static libraries, or debugging symbols.
+- ZIP CRC checks pass. Extracted executables match their built executables by
+  SHA-256 and retain executable permissions. A custom install prefix containing
+  spaces and Chinese also installs only the app and its ZIP.
+- The actual source executable is checked before installation. A fresh configure
+  creates an incomplete bundle directory even before compiling; installing this
+  correctly fails without publishing a ZIP, including when an older installed
+  executable exists. Invalid configurations also fail. Archive-command failure
+  removes temporary output and preserves the previous completed ZIP.
+- The Windows archive branch was run on macOS using a fixture named
+  `marp_gui.exe`. It produces exactly that one entry, excluding unrelated files,
+  and preserves its bytes. This checks the ZIP script, not a native Windows build.
+  Vendored dependencies and the MSVC runtime are selected as static for Windows.
+- Built-in theme, markdown, and PNG bytes match their source files exactly;
+  resource write failures report an error. The extracted app and a bare executable
+  copied outside the checkout both render a disposable sample. The bare executable
+  exercises resource extraction into per-session storage with no external themes.
+  Both exit successfully and their 2880 × 1800 framebuffers were visually inspected:
+  `.build/release-zip.png` and `.build/release-builtin.png`.
+- CTest still passes both suites: 13 GUI tests and 7 process checks. The single-config
+  run took 22.71 seconds; the multi-config run took 22.67 seconds.
+- Evidence: `.build/package-{configure,build,install,ctest}.log`, corresponding
+  `.build/package-multi-*.log`, `.build/package-checks.log`,
+  `.build/package-missing-build.log`, and `.build/release-{zip,builtin}.log`.
+- README is 40 lines with the shared install command. OpenSpec validation and
+  whitespace checks pass.
+
+The generated ZIP remains Apple Silicon / macOS 26+ with an ad-hoc signature.
+Node/Marp and Chrome/Edge remain external dependencies; Developer ID signing,
+notarization, Intel builds, and native Windows verification are not provided here.
+
+## Archive
+
+All 16 implementation tasks are complete. The delta requirements were synchronized
+into `openspec/specs/imgui-slide-editor/spec.md` and `openspec/specs/macos-desktop/spec.md`.
+The completed change was archived on 2026-10-09 under
+`openspec/changes/archive/2026-10-09-macos-desktop-readiness/`.

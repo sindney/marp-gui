@@ -19,6 +19,7 @@
 #include "app.h"
 #include "platform.h"
 #include "process.h"
+#include "builtin_resources.h"
 
 #if PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
@@ -488,8 +489,6 @@ int main(int argc, char *argv[]) {
         if (fs::is_directory(p / "themes")) { root = p; break; }
         if (p == p.parent_path()) break;
     }
-    app.repoRoot = root;
-    mg::ConfigureMarpEnvironment(root);
     char *pref = SDL_GetPrefPath("marp-gui", "Marp GUI");
     if (!pref) { LOGE << SDL_GetError(); return 1; }
     fs::path userDir = pref;
@@ -498,6 +497,12 @@ int main(int argc, char *argv[]) {
     app.runtimeDir = userDir / ("session-" + std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(app.runtimeDir);
+    if (!fs::is_directory(root / "themes")) {
+        root = app.runtimeDir / "resources";
+        mg::WriteBuiltinResources(root);
+    }
+    app.repoRoot = root;
+    mg::ConfigureMarpEnvironment(root);
     app.deckPath = fs::absolute(deckArg.empty() ? "slides.md" : deckArg);
     if (testDeck) {
         fs::path source = deckArg.empty() && !fs::is_regular_file(app.deckPath)

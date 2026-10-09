@@ -9,12 +9,38 @@ find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# Keep vendored dependencies inside the single application payload.
+set(BUILD_SHARED_LIBS OFF)
+if(MSVC)
+    # A standalone Windows executable must not require the VC runtime DLLs.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/dist" CACHE PATH "Release output directory" FORCE)
+endif()
+
+# Include binary-safe built-in resources for launches outside the checkout.
+foreach(resource IN ITEMS theme sample logo)
+    if(resource STREQUAL "theme")
+        set(resource_path "${CMAKE_CURRENT_SOURCE_DIR}/../themes/programmer.css")
+    elseif(resource STREQUAL "sample")
+        set(resource_path "${CMAKE_CURRENT_SOURCE_DIR}/../slides.md")
+    else()
+        set(resource_path "${CMAKE_CURRENT_SOURCE_DIR}/assets/marp_logo.png")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${resource_path}")
+    file(READ "${resource_path}" resource_hex HEX)
+    string(REGEX REPLACE "(..)" "0x\\1," builtin_${resource} "${resource_hex}")
+endforeach()
+configure_file(cmake/BuiltinResources.h.in generated/builtin_resources.h @ONLY)
 
 include(FetchContent)
 
 # --- SDL3 ----------------------------------------------------------------------
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
@@ -74,6 +100,7 @@ add_executable(marp_gui
 target_include_directories(marp_gui PRIVATE
     ${TEXTEDIT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(marp_gui PRIVATE imgui SDL3::SDL3 OpenGL::GL Threads::Threads nfd::nfd)
 if(WIN32)
@@ -112,6 +139,32 @@ add_custom_target(run
     USES_TERMINAL
     VERBATIM
 )
+
+if(APPLE OR WIN32)
+    if(APPLE)
+        set(MARP_RELEASE_PLATFORM macos)
+        set(MARP_RELEASE_PAYLOAD marp_gui.app)
+    else()
+        set(MARP_RELEASE_PLATFORM windows)
+        set(MARP_RELEASE_PAYLOAD marp_gui.exe)
+    endif()
+    if(CMAKE_CONFIGURATION_TYPES)
+        set(MARP_RELEASE_CONFIGS "${CMAKE_CONFIGURATION_TYPES}")
+    else()
+        set(MARP_RELEASE_CONFIGS "${CMAKE_BUILD_TYPE}")
+    endif()
+    install(CODE [[
+        if(NOT EXISTS "$<TARGET_FILE:marp_gui>" OR IS_DIRECTORY "$<TARGET_FILE:marp_gui>")
+            message(FATAL_ERROR "Build the selected application configuration before installing: $<TARGET_FILE:marp_gui>")
+        endif()
+    ]] COMPONENT Runtime)
+    install(TARGETS marp_gui
+        BUNDLE DESTINATION "." COMPONENT Runtime
+        RUNTIME DESTINATION "." COMPONENT Runtime
+    )
+    configure_file(cmake/ZipRelease.cmake.in ZipRelease.cmake @ONLY)
+    install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/ZipRelease.cmake" COMPONENT Runtime)
+endif()
 
 # --- Automation tests (Dear ImGui Test Engine) -----------------------------------
 FetchContent_Declare(
@@ -157,6 +210,7 @@ add_executable(marp_gui_tests
 target_include_directories(marp_gui_tests PRIVATE
     ${TEXTEDIT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(marp_gui_tests PRIVATE imgui_te SDL3::SDL3 OpenGL::GL Threads::Threads nfd::nfd)
 if(WIN32)
