@@ -15,12 +15,12 @@
 #include "command_palette.h"
 #include "log.h"
 #include "crash.h"
+#include "nfd.h"
 #include "app.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <commdlg.h>
 #endif
 
 #ifdef MARP_GUI_TESTS
@@ -446,39 +446,43 @@ static void ExportDeck(App &app, const std::string &fmt /* "pdf"|"pptx"|"html" *
 
 
 // ---------------------------------------------------------------------------
-// File dialogs (Windows common dialogs).
+// File dialogs — native via nativefiledialog-extended (Win32/macOS/Linux).
+// Returns true and fills outPath on selection. Caller clears ImGui held keys
+// after the modal (an NFD dialog can swallow the modifier key-up and leave
+// ImGui's KeyCtrl stuck — the ctrl+wheel trap).
 // ---------------------------------------------------------------------------
-static bool OpenFileDialog(HWND owner, char *outPath, size_t outSize) {
-#ifdef _WIN32
-    OPENFILENAMEA ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter = "Markdown (*.md)\0*.md\0All Files\0*.*\0";
-    ofn.lpstrFile = outPath;
-    ofn.nMaxFile = (DWORD)outSize;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    outPath[0] = '\0';
-    return GetOpenFileNameA(&ofn) == TRUE;
-#else
+static bool OpenFileDialog(const char *suggestDir, char *outPath, size_t outSize) {
+    nfdu8char_t *out = nullptr;
+    nfdu8filteritem_t filter = {"Markdown", "md,markdown"};
+    nfdresult_t r = NFD_OpenDialogU8(&out, &filter, 1,
+                                     (suggestDir && *suggestDir) ? suggestDir : nullptr);
+    ImGui::GetIO().ClearInputKeys(); // NFD modal may swallow modifier key-up
+    if (r == NFD_OKAY && out) {
+        strncpy(outPath, out, outSize - 1);
+        outPath[outSize - 1] = '\0';
+        NFD_FreePathU8(out);
+        return true;
+    }
+    if (r == NFD_ERROR)
+        LOGE << "NFD_OpenDialog error: " << (NFD_GetError() ? NFD_GetError() : "(unknown)");
     return false;
-#endif
 }
 
-static bool SaveFileDialog(HWND owner, char *outPath, size_t outSize, const char *suggest) {
-#ifdef _WIN32
-    OPENFILENAMEA ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = owner;
-    ofn.lpstrFilter = "Markdown (*.md)\0*.md\0All Files\0*.*\0";
-    ofn.lpstrFile = outPath;
-    ofn.nMaxFile = (DWORD)outSize;
-    ofn.Flags = OFN_OVERWRITEPROMPT;
-    ofn.lpstrDefExt = "md";
-    strncpy_s(outPath, outSize, suggest, _TRUNCATE);
-    return GetSaveFileNameA(&ofn) == TRUE;
-#else
+static bool SaveFileDialog(const char *suggestName, char *outPath, size_t outSize) {
+    nfdu8char_t *out = nullptr;
+    nfdu8filteritem_t filter = {"Markdown", "md,markdown"};
+    nfdresult_t r = NFD_SaveDialogU8(&out, &filter, 1, nullptr,
+                                     (suggestName && *suggestName) ? suggestName : "deck.md");
+    ImGui::GetIO().ClearInputKeys(); // NFD modal may swallow modifier key-up
+    if (r == NFD_OKAY && out) {
+        strncpy(outPath, out, outSize - 1);
+        outPath[outSize - 1] = '\0';
+        NFD_FreePathU8(out);
+        return true;
+    }
+    if (r == NFD_ERROR)
+        LOGE << "NFD_SaveDialog error: " << (NFD_GetError() ? NFD_GetError() : "(unknown)");
     return false;
-#endif
 }
 
 
@@ -522,6 +526,10 @@ int main(int argc, char *argv[]) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+
+    // nativefiledialog-extended backend (Win32 COM / AppKit / GTK-portal).
+    if (NFD_Init() != NFD_OKAY)
+        LOGW << "NFD_Init failed: " << (NFD_GetError() ? NFD_GetError() : "(unknown)");
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -761,19 +769,12 @@ int main(int argc, char *argv[]) {
 
         ImGui::PushFont(mono);
 
-#ifdef _WIN32
-        HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
-                                                 SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
-#else
-        void *hwnd = nullptr;
-#endif
-
         // --- Menu bar --------------------------------------------------------------
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Open...", "Ctrl+O")) {
                     char path[MAX_PATH] = {};
-                    if (OpenFileDialog(hwnd, path, sizeof(path))) {
+                    if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path, sizeof(path))) {
                         app.deckPath = fs::absolute(path);
                         SwitchDeck(app);
                     }
@@ -782,7 +783,7 @@ int main(int argc, char *argv[]) {
                 if (ImGui::MenuItem("Save As...")) {
                     char path[MAX_PATH];
                     std::string cur = app.deckPath.string();
-                    if (SaveFileDialog(hwnd, path, sizeof(path), cur.c_str())) {
+                    if (SaveFileDialog(app.deckPath.filename().string().c_str(), path, sizeof(path))) {
                         app.deckPath = fs::absolute(path);
                         SaveDeck(app);       // write buffer to the new path
                         SwitchDeck(app);     // reload from it + rebuild cleanly
@@ -822,7 +823,7 @@ int main(int argc, char *argv[]) {
             switch (cmd) {
             case palette::Command::Open: {
                 char path[MAX_PATH] = {};
-                if (OpenFileDialog(hwnd, path, sizeof(path))) {
+                if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path, sizeof(path))) {
                     app.deckPath = fs::absolute(path);
                     SwitchDeck(app);
                 }
@@ -832,7 +833,7 @@ int main(int argc, char *argv[]) {
             case palette::Command::SaveAs: {
                 char path[MAX_PATH];
                 std::string cur = app.deckPath.string();
-                if (SaveFileDialog(hwnd, path, sizeof(path), cur.c_str())) {
+                if (SaveFileDialog(app.deckPath.filename().string().c_str(), path, sizeof(path))) {
                     app.deckPath = fs::absolute(path);
                     SaveDeck(app);
                     SwitchDeck(app);
@@ -1195,7 +1196,7 @@ int main(int argc, char *argv[]) {
                 SaveDeck(app);
             if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
                 char path[MAX_PATH] = {};
-                if (OpenFileDialog(hwnd, path, sizeof(path))) {
+                if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path, sizeof(path))) {
                     app.deckPath = fs::absolute(path);
                     SwitchDeck(app);
                 }
@@ -1268,6 +1269,7 @@ int main(int argc, char *argv[]) {
     stepMs("window destroy");
     SDL_Quit();
     stepMs("SDL_Quit");
+    NFD_Quit();
 #ifdef MARP_GUI_TESTS
     return failed == 0 ? 0 : 2;
 #else

@@ -24,12 +24,22 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 
+# --- nativefiledialog-extended (cross-platform file dialogs: Win32/macOS/Linux) ---
+set(NFD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(NFD_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    nfd
+    GIT_REPOSITORY https://github.com/btzy/nativefiledialog-extended.git
+    GIT_TAG        v1.4.1
+    GIT_SHALLOW    TRUE
+)
+
 # --- ImGuiColorTextEdit ----------------------------------------------------------
 # Vendored (with local patches: caret-position accessor for IME anchoring).
 # Source: https://github.com/BalazsJako/ImGuiColorTextEdit
 set(TEXTEDIT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ImGuiColorTextEdit)
 
-FetchContent_MakeAvailable(SDL3 imgui)
+FetchContent_MakeAvailable(SDL3 imgui nfd)
 
 # ImGui has no CMake build of its own — compile it here.
 add_library(imgui STATIC
@@ -59,7 +69,7 @@ target_include_directories(marp_gui PRIVATE
     ${TEXTEDIT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
-target_link_libraries(marp_gui PRIVATE imgui SDL3::SDL3 opengl32 dbghelp)
+target_link_libraries(marp_gui PRIVATE imgui SDL3::SDL3 opengl32 dbghelp nfd::nfd)
 if (MSVC)
     target_compile_options(marp_gui PRIVATE /utf-8)
     # Emit PDBs in every config (incl. Release) so crash stack traces and the
@@ -106,7 +116,7 @@ target_include_directories(marp_gui_tests PRIVATE
     ${TEXTEDIT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
-target_link_libraries(marp_gui_tests PRIVATE imgui_te SDL3::SDL3 opengl32 dbghelp)
+target_link_libraries(marp_gui_tests PRIVATE imgui_te SDL3::SDL3 opengl32 dbghelp nfd::nfd)
 target_compile_definitions(marp_gui_tests PRIVATE MARP_GUI_TESTS)
 if (MSVC)
     target_compile_options(marp_gui_tests PRIVATE /utf-8 /Zi)
