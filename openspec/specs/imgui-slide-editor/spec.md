@@ -107,7 +107,7 @@ The repository SHALL document one shared workflow using direct CMake commands to
 - **THEN** all supported platform macros have explicit values and native OS detection is confined to the central header
 
 ### Requirement: Cross-platform release ZIP
-After the selected configuration is built, `cmake --install` SHALL install only the application and generate a ZIP in the install prefix, defaulting to the build directory's `dist/`. The ZIP SHALL contain one application payload: `marp_gui.app` on macOS or `marp_gui.exe` on Windows. Packaging SHALL preserve macOS bundle metadata and SHALL report archive failures without publishing a partial ZIP. Source, tests, dependency libraries, and debugging symbols SHALL NOT be packaged. Node, Marp CLI, and the browser SHALL remain external prerequisites.
+After the selected configuration is built, `cmake --install` SHALL install only the application and generate a ZIP in the install prefix, defaulting to the build directory's `dist/`. The ZIP SHALL contain one application payload: `marp-gui.app` on macOS or `marp-gui.exe` on Windows. Packaging SHALL preserve macOS bundle metadata and SHALL report archive failures without publishing a partial ZIP. Source, tests, dependency libraries, and debugging symbols SHALL NOT be packaged. Node, Marp CLI, and the browser SHALL remain external prerequisites.
 
 #### Scenario: Install a macOS release
 - **WHEN** a developer builds Release and runs `cmake --install gui/build --config Release`
@@ -115,7 +115,7 @@ After the selected configuration is built, `cmake --install` SHALL install only 
 
 #### Scenario: Install a Windows release
 - **WHEN** a developer builds Release with MSVC and runs the same install command
-- **THEN** `gui/build/dist/marp-gui-windows.zip` is created containing only `marp_gui.exe`, with a static MSVC runtime and built-in theme, sample deck, and logo
+- **THEN** `gui/build/dist/marp-gui-windows.zip` is created containing only `marp-gui.exe`, with a static MSVC runtime and built-in theme, sample deck, and logo
 
 #### Scenario: Launch without external application resources
 - **WHEN** the executable cannot discover external themes

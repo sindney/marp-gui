@@ -149,7 +149,7 @@ add_custom_target(run
 if(APPLE OR WIN32)
     if(APPLE)
         set(MARP_RELEASE_PLATFORM macos)
-        set(MARP_RELEASE_PAYLOAD marp_gui.app)
+        set(MARP_RELEASE_PAYLOAD marp-gui.app)
     else()
         set(MARP_RELEASE_PLATFORM windows)
         set(MARP_RELEASE_PAYLOAD marp-gui.exe)
