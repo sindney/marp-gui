@@ -1,8 +1,10 @@
 // gui/src/crash.h — crash logging for marp_gui.
 //
-// On an unhandled SEH exception or CRT abort, write the exception info and a
-// minidump to .gui-build/crash_*.log / .dmp, and flush the log. Lets us get a
-// usable report instead of a silent exit.
+// On an unhandled SEH exception or CRT abort: symbolize and log the crashing
+// callstack straight into the log system (so a crash is readable without a
+// debugger), and write a minidump to <exe>/crash/crash_<pid>.dmp for offline
+// analysis. Symbols come from the module's PDB — always generated (see
+// CMakeLists), so this resolves function/file/line for our own frames.
 
 #pragma once
 
@@ -19,8 +21,90 @@
 
 namespace mg {
 
+// One-time dbghelp init for symbolized stack walks.
+static bool InitSymbols() {
+    static bool done = false, ok = false;
+    if (done) return ok;
+    done = true;
+    HANDLE proc = GetCurrentProcess();
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES |
+                  SYMOPT_UNDNAME | SYMOPT_INCLUDE_32BIT_MODULES);
+    ok = SymInitialize(proc, nullptr, TRUE) == TRUE;
+    return ok;
+}
+
+// Walk the crashing thread's context and log symbolized frames.
+static void LogStackTrace(EXCEPTION_POINTERS *ep) {
+    if (!InitSymbols()) {
+        LOGE << "(symbols unavailable — PDB not found)";
+        return;
+    }
+    HANDLE proc = GetCurrentProcess();
+    HANDLE thread = GetCurrentThread();
+
+    CONTEXT ctx = ep && ep->ContextRecord ? *ep->ContextRecord : CONTEXT{};
+    if (!ep || !ep->ContextRecord) {
+        RtlCaptureContext(&ctx);
+    }
+
+    STACKFRAME64 frame{};
+    frame.AddrPC.Offset = ctx.Rip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = ctx.Rbp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = ctx.Rsp;
+    frame.AddrStack.Mode = AddrModeFlat;
+
+    for (int i = 0; i < 64; ++i) {
+        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, thread, &frame, &ctx,
+                         nullptr, SymFunctionTableAccess64, SymGetModuleBase64,
+                         nullptr))
+            break;
+        if (frame.AddrPC.Offset == 0) break;
+
+        DWORD64 addr = frame.AddrPC.Offset;
+
+        // symbol name
+        char symBuf[sizeof(SYMBOL_INFO) + 256];
+        SYMBOL_INFO *sym = (SYMBOL_INFO *)symBuf;
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 255;
+        DWORD64 disp = 0;
+        const char *name = "<no symbol>";
+        if (SymFromAddr(proc, addr, &disp, sym)) name = sym->Name;
+
+        // file:line
+        IMAGEHLP_LINE64 line{};
+        line.SizeOfStruct = sizeof(line);
+        DWORD lineDisp = 0;
+        const char *file = nullptr;
+        unsigned lineno = 0;
+        if (SymGetLineFromAddr64(proc, addr, &lineDisp, &line)) {
+            file = line.FileName;
+            lineno = line.LineNumber;
+        }
+
+        std::stringstream ss;
+        ss << "  [" << i << "] " << name;
+        if (file) {
+            // keep just the tail of the path for readability
+            const char *base = strrchr(file, '\\');
+            ss << "  (" << (base ? base + 1 : file) << ":" << lineno << ")";
+        } else {
+            ss << "  @ 0x" << std::hex << addr << std::dec;
+        }
+        LOGE << ss.str();
+    }
+}
+
 static LONG WINAPI CrashUnhandledException(EXCEPTION_POINTERS *ep) {
-    // Write dumps next to the exe (NOT .gui-build — the build worker wipes it).
+    DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
+    void *addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+
+    LOGE << "CRASH: exception 0x" << std::hex << code << " at " << addr;
+    LogStackTrace(ep);
+
+    // minidump next to the exe (NOT .gui-build — the build worker wipes it).
     std::string dir;
     {
         char exe[MAX_PATH];
@@ -32,12 +116,6 @@ static LONG WINAPI CrashUnhandledException(EXCEPTION_POINTERS *ep) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
 
-    DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
-    void *addr = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionAddress : nullptr;
-
-    LOGE << "CRASH: exception 0x" << std::hex << code << " at " << addr;
-
-    // minidump
     char dmpPath[MAX_PATH];
     snprintf(dmpPath, sizeof(dmpPath), "%s\\crash_%lu.dmp", dir.c_str(),
              (unsigned long)GetCurrentProcessId());
@@ -58,6 +136,8 @@ static LONG WINAPI CrashUnhandledException(EXCEPTION_POINTERS *ep) {
 
 static void CrashAbortHandler(int sig) {
     LOGE << "CRASH: CRT signal " << sig << " (abort/assert)";
+    LogStackTrace(nullptr);
+    std::signal(sig, SIG_DFL);  // don't re-enter on the abort below
     std::abort();
 }
 

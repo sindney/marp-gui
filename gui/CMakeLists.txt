@@ -62,6 +62,11 @@ target_include_directories(marp_gui PRIVATE
 target_link_libraries(marp_gui PRIVATE imgui SDL3::SDL3 opengl32 dbghelp)
 if (MSVC)
     target_compile_options(marp_gui PRIVATE /utf-8)
+    # Emit PDBs in every config (incl. Release) so crash stack traces and the
+    # minidump resolve to function/file/line. Symbols are separate .pdb files,
+    # so this costs nothing at runtime.
+    target_compile_options(marp_gui PRIVATE /Zi)
+    target_link_options(marp_gui PRIVATE /DEBUG /OPT:REF /OPT:ICF)
 endif()
 
 # --- Automation tests (Dear ImGui Test Engine) -----------------------------------
@@ -104,7 +109,8 @@ target_include_directories(marp_gui_tests PRIVATE
 target_link_libraries(marp_gui_tests PRIVATE imgui_te SDL3::SDL3 opengl32 dbghelp)
 target_compile_definitions(marp_gui_tests PRIVATE MARP_GUI_TESTS)
 if (MSVC)
-    target_compile_options(marp_gui_tests PRIVATE /utf-8)
+    target_compile_options(marp_gui_tests PRIVATE /utf-8 /Zi)
+    target_link_options(marp_gui_tests PRIVATE /DEBUG /OPT:REF /OPT:ICF)
 endif()
 
 enable_testing()
