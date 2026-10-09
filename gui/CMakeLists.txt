@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.24)
 project(marp_gui CXX)
 
+if(APPLE)
+    enable_language(OBJC OBJCXX)
+endif()
+find_package(OpenGL REQUIRED)
+find_package(Threads REQUIRED)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -62,14 +68,33 @@ add_executable(marp_gui
     src/themes.cpp
     src/markdown_lang.cpp
     src/command_palette.cpp
-    resource.rc
+    src/process.cpp
     ${TEXTEDIT_DIR}/TextEditor.cpp
 )
 target_include_directories(marp_gui PRIVATE
     ${TEXTEDIT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
-target_link_libraries(marp_gui PRIVATE imgui SDL3::SDL3 opengl32 dbghelp nfd::nfd)
+target_link_libraries(marp_gui PRIVATE imgui SDL3::SDL3 OpenGL::GL Threads::Threads nfd::nfd)
+if(WIN32)
+    target_sources(marp_gui PRIVATE resource.rc)
+    target_link_libraries(marp_gui PRIVATE dbghelp)
+endif()
+if(APPLE)
+    file(GLOB MARP_THEMES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../themes/*.css")
+    set_source_files_properties(${MARP_THEMES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/themes")
+    set(MARP_RESOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../slides.md" assets/marp.icns)
+    set_source_files_properties(${MARP_RESOURCES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    set_source_files_properties(assets/marp_logo.png PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/gui/assets")
+    target_sources(marp_gui PRIVATE ${MARP_THEMES} ${MARP_RESOURCES} assets/marp_logo.png)
+    set_target_properties(marp_gui PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Marp GUI"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "app.marp-gui.editor"
+        MACOSX_BUNDLE_ICON_FILE "marp.icns"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
+    )
+endif()
 if (MSVC)
     target_compile_options(marp_gui PRIVATE /utf-8)
     # Emit PDBs in every config (incl. Release) so crash stack traces and the
@@ -79,6 +104,15 @@ if (MSVC)
     target_link_options(marp_gui PRIVATE /DEBUG /OPT:REF /OPT:ICF)
 endif()
 
+# Resolve the executable (including bundle/configuration paths) through CMake.
+add_custom_target(run
+    COMMAND $<TARGET_FILE:marp_gui>
+    DEPENDS marp_gui
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    USES_TERMINAL
+    VERBATIM
+)
+
 # --- Automation tests (Dear ImGui Test Engine) -----------------------------------
 FetchContent_Declare(
     imgui_test_engine
@@ -87,6 +121,13 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(imgui_test_engine)
+
+# Instrument ImGui as well as the test executable (required by Test Engine).
+get_target_property(IMGUI_SOURCES imgui SOURCES)
+add_library(imgui_tested STATIC ${IMGUI_SOURCES})
+target_include_directories(imgui_tested PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui_tested PUBLIC SDL3::SDL3)
+target_compile_definitions(imgui_tested PUBLIC IMGUI_ENABLE_TEST_ENGINE)
 
 add_library(imgui_te STATIC
     ${imgui_test_engine_SOURCE_DIR}/imgui_test_engine/imgui_te_context.cpp
@@ -101,7 +142,7 @@ add_library(imgui_te STATIC
 target_include_directories(imgui_te PUBLIC
     ${imgui_test_engine_SOURCE_DIR}/imgui_test_engine
 )
-target_link_libraries(imgui_te PUBLIC imgui)
+target_link_libraries(imgui_te PUBLIC imgui_tested)
 target_compile_definitions(imgui_te PUBLIC IMGUI_ENABLE_TEST_ENGINE IMGUI_TEST_ENGINE_ENABLE_COROUTINE_STDTHREAD_IMPL=1)
 
 add_executable(marp_gui_tests
@@ -109,6 +150,7 @@ add_executable(marp_gui_tests
     src/themes.cpp
     src/markdown_lang.cpp
     src/command_palette.cpp
+    src/process.cpp
     src/tests.cpp
     ${TEXTEDIT_DIR}/TextEditor.cpp
 )
@@ -116,7 +158,10 @@ target_include_directories(marp_gui_tests PRIVATE
     ${TEXTEDIT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
-target_link_libraries(marp_gui_tests PRIVATE imgui_te SDL3::SDL3 opengl32 dbghelp nfd::nfd)
+target_link_libraries(marp_gui_tests PRIVATE imgui_te SDL3::SDL3 OpenGL::GL Threads::Threads nfd::nfd)
+if(WIN32)
+    target_link_libraries(marp_gui_tests PRIVATE dbghelp)
+endif()
 target_compile_definitions(marp_gui_tests PRIVATE MARP_GUI_TESTS)
 if (MSVC)
     target_compile_options(marp_gui_tests PRIVATE /utf-8 /Zi)
@@ -124,4 +169,11 @@ if (MSVC)
 endif()
 
 enable_testing()
-add_test(NAME gui_auto COMMAND marp_gui_tests --nogui-assertions)
+add_test(NAME gui_auto COMMAND marp_gui_tests --test-deck "${CMAKE_CURRENT_SOURCE_DIR}/../slides.md")
+set_tests_properties(gui_auto PROPERTIES TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+if(UNIX)
+    add_executable(marp_process_tests src/process.cpp src/process_tests.cpp)
+    target_link_libraries(marp_process_tests PRIVATE Threads::Threads)
+    add_test(NAME process_auto COMMAND marp_process_tests)
+    set_tests_properties(process_auto PROPERTIES TIMEOUT 10)
+endif()

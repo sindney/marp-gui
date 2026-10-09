@@ -4,14 +4,40 @@
 // built with MARP_GUI_TESTS. Run:  marp_gui_tests.exe [deck.md]
 
 #include "app.h"
+#include "platform.h"
 #include "themes.h"
 #include "markdown_lang.h"
 
 #include <fstream>
+#include <chrono>
+#include <cstdlib>
+#include <sstream>
 
 #include "imgui.h"
 #include "imgui_te_engine.h"
 #include "imgui_te_context.h"
+
+static bool WaitForPreview(ImGuiTestContext *ctx, App &app) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+    while (!PreviewReady(app) && std::chrono::steady_clock::now() < deadline) ctx->Yield();
+    if (!PreviewReady(app)) ctx->LogError("preview unavailable: %s", app.lastError.c_str());
+    return PreviewReady(app);
+}
+
+static void Capture(ImGuiTestContext *ctx, App &app, const char *name) {
+    if (const char *dir = std::getenv("MARP_GUI_CAPTURE_DIR")) {
+        fs::create_directories(dir);
+        app.screenshotPath = fs::path(dir) / name;
+        std::error_code ec;
+        fs::remove(app.screenshotPath, ec);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!app.screenshotPath.empty() && std::chrono::steady_clock::now() < deadline) ctx->Yield();
+        IM_CHECK(app.screenshotPath.empty());
+        IM_CHECK(fs::is_regular_file(fs::path(dir) / name));
+    }
+}
+
+struct DeckSwitchVars { fs::path pendingPath; };
 
 void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
     // --- Slide map parsing ----------------------------------------------------
@@ -139,10 +165,23 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
     {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "switch_deck");
         t->UserData = app;
+        t->SetVarsDataType<DeckSwitchVars>();
+        // Texture disposal must run with the UI thread's current GL context.
+        t->GuiFunc = [](ImGuiTestContext *ctx) {
+            auto &vars = ctx->GetVars<DeckSwitchVars>();
+            if (!vars.pendingPath.empty()) {
+                App &a = *(App *)ctx->Test->UserData;
+                a.deckPath = vars.pendingPath;
+                SwitchDeck(a);
+                vars.pendingPath.clear();
+            }
+        };
         t->TestFunc = [](ImGuiTestContext *ctx) {
             App &a = *(App *)ctx->Test->UserData;
+            IM_CHECK(WaitForPreview(ctx, a)); // exercise disposal of real textures
+            auto &vars = ctx->GetVars<DeckSwitchVars>();
             // Build a foreign deck with an image reference, in a temp dir.
-            fs::path dir = fs::temp_directory_path() / "marp_switch_test";
+            fs::path dir = a.runtimeDir / "foreign deck";
             std::error_code ec;
             fs::create_directories(dir, ec);
             fs::path deck = dir / "other.md";
@@ -151,15 +190,15 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
                 f << "---\nmarp: true\n---\n\n# Foreign\n\n![bg](images/x.png)\n";
             }
             fs::path origDeck = a.deckPath;
-            a.deckPath = deck;
-            SwitchDeck(a);                 // the exact File→Open path
+            vars.pendingPath = deck;
             ctx->Yield(5);                 // let a few frames render the new deck
             IM_CHECK(a.deckPath == deck);
-            IM_CHECK(a.slides.empty() || a.slides.size() > 0); // just don't crash
+            IM_CHECK(a.editor.GetText().find("# Foreign") != std::string::npos);
+            IM_CHECK(a.slideStarts.size() == 1);
             // restore
-            a.deckPath = origDeck;
-            SwitchDeck(a);
+            vars.pendingPath = origDeck;
             ctx->Yield(3);
+            fs::remove_all(dir, ec);
         };
     }
 
@@ -178,6 +217,112 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
                     ctx->LogInfo("  '%s'", w->Name);
             }
             IM_CHECK(found);
+        };
+    }
+
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "real_preview_and_navigation");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            IM_CHECK(WaitForPreview(ctx, a));
+            IM_CHECK_EQ(a.slides.size(), a.slideStarts.size());
+            IM_CHECK(a.lastError.empty());
+            Capture(ctx, a, "editor.bmp");
+            a.editor.SetCursorPosition({a.slideStarts[1], 0});
+            ctx->Yield(3);
+            IM_CHECK_EQ(a.viewSlide, 1);
+            SetViewSlide(a, 1000);
+            IM_CHECK_EQ(a.viewSlide, (int)a.slides.size() - 1);
+            SetViewSlide(a, -1);
+            IM_CHECK_EQ(a.viewSlide, 0);
+        };
+    }
+
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "platform_keyboard_shortcuts");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            bool autosave = a.autosave;
+            a.autosave = false;
+            std::string before = a.editor.GetText();
+            ImGuiWindow *editor = nullptr;
+            for (ImGuiWindow *w : ImGui::GetCurrentContext()->Windows)
+                if (strstr(w->Name, "/editor_")) editor = w;
+            IM_CHECK(editor != nullptr);
+            ctx->WindowFocus(editor->ID);
+            ctx->MouseMoveToPos(ImVec2(editor->Pos.x + 100, editor->Pos.y + 80));
+            ctx->MouseClick();
+            a.editor.SetCursorPosition({0, 0});
+            ctx->KeyChars("x");
+            IM_CHECK(a.editor.GetText() != before);
+            std::string edited = a.editor.GetText();
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_Z);
+            IM_CHECK(a.editor.GetText() == before);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z);
+            IM_CHECK(a.editor.GetText() == edited);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_A);
+            IM_CHECK(a.editor.HasSelection());
+            std::string selected = a.editor.GetSelectedText();
+            ctx->LogInfo("buffer %d bytes, selected %d bytes", (int)edited.size(), (int)selected.size());
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_C);
+            IM_CHECK(std::string(ImGui::GetClipboardText()) == selected);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_S);
+            std::ifstream file(a.deckPath); std::stringstream disk; disk << file.rdbuf();
+            IM_CHECK(disk.str() == edited);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_P);
+            ctx->Yield(3);
+            IM_CHECK(a.showPalette);
+            Capture(ctx, a, "palette.bmp");
+            ctx->KeyPress(ImGuiKey_Escape);
+            ctx->Yield(3);
+            IM_CHECK(!a.showPalette);
+            a.editor.SetText(before);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_S);
+            a.autosave = autosave;
+        };
+    }
+
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "native_fonts_and_settings");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+#if PLATFORM_MACOS
+            IM_CHECK(ImGui::GetIO().ConfigMacOSXBehaviors);
+            IM_CHECK(ImGui::GetIO().FontDefault->IsGlyphInFont(0x4f60)); // 你
+#endif
+            a.showSettings = true;
+            ctx->Yield(3);
+            Capture(ctx, a, "settings.bmp");
+            ctx->KeyPress(ImGuiKey_Escape);
+            ctx->Yield(3);
+            IM_CHECK(!a.showSettings);
+        };
+    }
+
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "real_exports");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            for (const char *format : {"html", "pdf", "pptx"}) {
+                fs::path output = a.deckPath;
+                output.replace_extension(std::string(".") + format);
+                ExportDeck(a, format);
+                auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+                while (a.status != "exported " + output.filename().string() &&
+                       a.status.rfind("export ", 0) != 0 &&
+                       std::chrono::steady_clock::now() < deadline) ctx->Yield();
+                IM_CHECK(a.status == "exported " + output.filename().string());
+                IM_CHECK(fs::exists(output));
+                IM_CHECK(fs::file_size(output) > 100);
+                std::ifstream in(output, std::ios::binary);
+                char header[5] = {}; in.read(header, 4);
+                if (std::string(format) == "pdf") IM_CHECK(std::string(header, 4) == "%PDF");
+                if (std::string(format) == "pptx") IM_CHECK(std::string(header, 2) == "PK");
+            }
         };
     }
 }

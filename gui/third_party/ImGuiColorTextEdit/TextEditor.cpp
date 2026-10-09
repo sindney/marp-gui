@@ -698,8 +698,9 @@ void TextEditor::HandleKeyboardInputs()
 {
 	ImGuiIO& io = ImGui::GetIO();
 	auto shift = io.KeyShift;
-	auto ctrl = io.ConfigMacOSXBehaviors ? io.KeySuper : io.KeyCtrl;
-	auto alt = io.ConfigMacOSXBehaviors ? io.KeyCtrl : io.KeyAlt;
+	// ImGui 1.92 maps the macOS Command modifier to KeyCtrl on input.
+	auto ctrl = io.KeyCtrl;
+	auto alt = io.KeyAlt;
 
 	if (ImGui::IsWindowFocused())
 	{
@@ -715,6 +716,8 @@ void TextEditor::HandleKeyboardInputs()
 		else if (!IsReadOnly() && !ctrl && !shift && alt && ImGui::IsKeyPressed(ImGuiKey_Backspace))
 			Undo();
 		else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Y))
+			Redo();
+		else if (!IsReadOnly() && ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Z))
 			Redo();
 		else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
 			MoveUp(1, shift);
@@ -778,8 +781,8 @@ void TextEditor::HandleMouseInputs()
 {
 	ImGuiIO& io = ImGui::GetIO();
 	auto shift = io.KeyShift;
-	auto ctrl = io.ConfigMacOSXBehaviors ? io.KeySuper : io.KeyCtrl;
-	auto alt = io.ConfigMacOSXBehaviors ? io.KeyCtrl : io.KeyAlt;
+	auto ctrl = io.KeyCtrl;
+	auto alt = io.KeyAlt;
 
 	if (ImGui::IsWindowHovered())
 	{

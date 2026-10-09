@@ -10,7 +10,7 @@
 
 #include "log.h"
 
-#ifdef _WIN32
+#if PLATFORM_WINDOWS
 #include <windows.h>
 #include <dbghelp.h>
 #include <csignal>
@@ -153,9 +153,15 @@ inline void InstallCrashHandler() {
 #else // non-Windows: minimal signal logging
 #include <csignal>
 #include <cstdlib>
+#include <unistd.h>
 namespace mg {
 static void CrashAbortHandler(int sig) {
-    LOGE << "CRASH: signal " << sig;
+    // Logging takes locks and allocates memory, which is unsafe in a signal
+    // handler. Reset SIGABRT before aborting so it cannot recurse.
+    const char *message = sig == SIGSEGV ? "marp_gui: fatal SIGSEGV\n" : "marp_gui: fatal signal\n";
+    size_t length = sig == SIGSEGV ? 24 : 23;
+    (void)!write(STDERR_FILENO, message, length);
+    std::signal(SIGABRT, SIG_DFL);
     std::abort();
 }
 inline void InstallCrashHandler() {

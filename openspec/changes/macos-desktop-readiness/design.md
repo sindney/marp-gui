@@ -1,0 +1,38 @@
+## Context
+
+The app uses C++17, SDL3, OpenGL3, Dear ImGui, a patched TextEditor, and nativefiledialog. CMake unconditionally links Windows libraries and the runtime invokes `cmd /c`. Tests currently mistake CTest's flag for a deck path and do not wait for a rendered preview.
+
+## Goals / Non-Goals
+
+**Goals:** Build and launch on macOS, render and export real decks, preserve Windows behavior, support macOS input and display conventions, and provide reproducible automated and visual evidence.
+
+**Non-Goals:** Signed/notarized distribution, replacing OpenGL, new editor features, or release publishing.
+
+## Decisions
+
+1. Use `OpenGL::GL`, conditional Windows resources/dbghelp, and a CMake macOS bundle. Package existing assets and use SDL's base path to locate Resources. A plain command-line executable alone would not cover Finder launch.
+2. Use an owned process abstraction: POSIX spawn with argument vectors, redirected logs, a dedicated process group, and cancellation on shutdown; preserve Windows command-shell support for npm shims with quoting. Avoid POSIX shell interpolation because deck paths can contain spaces, Unicode, and shell metacharacters.
+3. Resolve Marp from PATH, local npm binaries, and common macOS installation locations; extend inherited PATH for Node shims when Finder supplies a minimal environment. Dependency probes must not install packages implicitly.
+4. Separate immutable resource roots from a per-instance writable SDL preference directory. Copy the bundled sample into user storage for default Finder launch. Keep preview and export logs separate so rebuilds cannot delete export diagnostics.
+5. Request a forward-compatible OpenGL 3.2 context/GLSL 150 on macOS, enable high pixel density, and use framebuffer pixels for the viewport. Use system Menlo and PingFang fonts after checking existence, with safe default fallback. Command shortcuts follow ImGui's macOS behaviors; add Command+Shift+Z redo to the patched editor.
+6. Keep export work owned and publish results on the main thread to prevent detached workers accessing destroyed state. Compile a separate ImGui library with Test Engine hooks, and marshal test actions that dispose OpenGL textures through the engine GUI callback on the main thread. Run CTest against a disposable copy of the sample; verify actual preview textures, exports, keyboard interactions, and process cancellation. Capture framebuffer screenshots for direct visual inspection if desktop capture is unavailable.
+
+7. Use async-signal-safe stderr diagnostics and reset SIGABRT before aborting on macOS, avoiding recursive crash handling.
+
+8. Follow fury3d's central header convention: identify the platform once in `platform.h`, default inactive `PLATFORM_*` macros to 0, and use numeric `#if` guards throughout application code. Keep compiler-specific checks and third-party platform detection in their own scope.
+9. Use direct CMake configure/build commands and CTest on both platforms, following fury3d's workflow. Set `CMAKE_BUILD_TYPE=Release` for single-configuration generators and pass `--config Release` / `-C Release` for multi-configuration generators. A CMake `run` target resolves `$<TARGET_FILE:marp_gui>` for the selected configuration and macOS bundle, builds the app first, and launches from the repository root. npm is used only to install the external Marp runtime dependency.
+
+## Risks / Trade-offs
+
+- OpenGL is deprecated by Apple → retain the existing renderer with macOS-supported context settings; migration is separate work.
+- External Node/Marp/Chrome installations vary → explicit setup docs, common-path discovery, and dependency errors.
+- Native dialogs require an interactive desktop → exercise them visually when possible and record any verification limits.
+- Windows cannot be executed on this host → retain platform guards and inspect its build/command paths.
+
+## Migration Plan
+
+Configure and build locally, run process and UI automation against temporary files, then launch the bundle from an unrelated directory and inspect screenshots. Leave implementation and OpenSpec artifacts uncommitted for review; rollback is reverting those files.
+
+## Open Questions
+
+None blocking implementation. Intel macOS and Windows runtime validation require their respective hosts.

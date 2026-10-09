@@ -21,7 +21,10 @@ struct App {
     TextEditor editor;
     fs::path deckPath;
     fs::path themePath;                       // currently selected marp theme css
-    fs::path repoRoot; // cwd at launch; marp runs here
+    fs::path repoRoot;                        // immutable resources (bundle or repo)
+    fs::path runtimeDir;                      // writable, per-instance work directory
+    fs::path logPath;                         // persistent optional session log
+    fs::path screenshotPath;                  // optional framebuffer capture
     std::unique_ptr<BuildWorker> worker;
 
     std::vector<int> slideStarts{0};
@@ -44,9 +47,9 @@ struct App {
     // --- App shell additions ---------------------------------------------------
     bool showSettings = false;
     bool showAbout = false;
-    bool showPalette = false;                 // Ctrl+P command palette
+    bool showPalette = false;                 // platform shortcut + P
     bool marpCliMissing = false;              // marp-cli not resolvable → blocking dialog
-    bool logToFile = false;                   // Settings: mirror log to .gui-build/marp_gui.log
+    bool logToFile = false;                   // Settings: mirror log to user storage
     float splitFrac = 0.5f;                   // editor width fraction (draggable splitter)
     float thumbFrac = 0.22f;                  // thumbnail strip height fraction (draggable)
     int uiThemeIndex = 0;                     // Programmer
@@ -64,6 +67,8 @@ int SlideForLine(const std::vector<int> &starts, int line);
 // Deck lifecycle (defined in main.cpp).
 void LoadDeck(App &app);
 void SwitchDeck(App &app);
+void ExportDeck(App &app, const std::string &format);
+bool PreviewReady(const App &app);
 
 // Unified slide navigation: set the viewed slide (clamped) and request the
 // thumbnail strip center it. All page-turn paths (editor caret sync, wheel,

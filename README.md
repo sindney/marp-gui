@@ -1,47 +1,37 @@
 # marp-gui
 
-A native [Marp](https://marp.app) slide editor with live preview — Dear ImGui
-desktop app (SDL3 + OpenGL3): markdown editor on the left, rendered slides on
-the right.
+Native [Marp](https://marp.app) slide editor for Windows and macOS, with live preview.
 
-![](gui/screenshot.png)
+![Editor](gui/screenshot.png)
 
-## Prerequisites
+## Requirements
 
-- **[marp-cli](https://github.com/marp-team/marp-cli)** — does the actual rendering. Install it first:
-  ```bash
-  npm i -g @marp-team/marp-cli
-  ```
-- **Chrome or Edge** — marp-cli drives a headless browser for PNG/PDF/PPTX output
-- **MSVC + CMake ≥ 3.24** — to build the app
+Node.js/npm, CMake ≥ 3.24, Chrome or Edge, and a C++17 compiler
+(MSVC on Windows; Xcode Command Line Tools on macOS).
 
-## Build
+## Build and run
 
-```bash
-cmake -S gui -B gui/build -G "Visual Studio 17 2022" -A x64
-cmake --build gui/build --config Release
+Use the same commands on either platform:
 
-.\gui\build\Release\marp_gui.exe                  # edits slides.md in cwd
-.\gui\build\Release\marp_gui.exe path\to\deck.md  # any deck
+```sh
+npm install --no-save --package-lock=false @marp-team/marp-cli
+cmake -S gui -B gui/build -DCMAKE_BUILD_TYPE=Release
+cmake --build gui/build --config Release --parallel
+cmake --build gui/build --config Release --target run
+ctest --test-dir gui/build -C Release --output-on-failure
 ```
 
-## Automation
+CMake fetches the C++ dependencies. `run` opens `slides.md`; use File → Open
+for another deck. Tests need an interactive desktop and the browser.
 
-Built with [Dear ImGui Test Engine](https://github.com/ocornut/imgui_test_engine):
+Use **Cmd** on macOS or **Ctrl** on Windows: **S** saves, **O** opens,
+**P** opens commands, **Z** undoes, and **Shift+Z** redoes.
+File → Export produces PDF, PPTX, or HTML beside the deck.
 
-```bash
-cmake --build gui/build --config Release --target marp_gui_tests
-.\gui\build\Release\marp_gui_tests.exe slides.md   # exit code 0 = all pass
-```
+## Thanks
 
-Covers: slide-map parsing, deck load, editor input, UI theme switching,
-markdown highlighting, undo/redo, window layout (7 tests).
-
-## Special thanks
-
-- https://github.com/ocornut/imgui
-- https://github.com/ocornut/imgui_test_engine
-- https://github.com/marp-team/marp-cli
-- ImGui themes shared by **TheAncientOwl** in
-[ocornut/imgui issue #707](https://github.com/ocornut/imgui/issues/707)
-- Claude Code + Kimi K3
+[Dear ImGui](https://github.com/ocornut/imgui),
+[Test Engine](https://github.com/ocornut/imgui_test_engine),
+[Marp CLI](https://github.com/marp-team/marp-cli), and
+[TheAncientOwl’s themes](https://github.com/ocornut/imgui/issues/707).
+Claude Code + Kimi K3.

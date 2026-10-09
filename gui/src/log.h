@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "platform.h"
+
 #include <chrono>
 #include <fstream>
 #include <functional>
@@ -43,11 +45,7 @@ public:
         auto end = func.find('(');
         if (start != std::string::npos && end != std::string::npos && end > start)
             func = func.substr(start, end - start);
-#ifdef _MSC_VER
-        auto s = this->file.find_last_of('\\');
-#else
-        auto s = this->file.find_last_of('/');
-#endif
+        auto s = this->file.find_last_of("\\/");
         if (s != std::string::npos) this->file = this->file.substr(s + 1);
     }
 
@@ -66,7 +64,7 @@ struct Formatter {
         auto t = system_clock::to_time_t(now);
         auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
         tm tmv;
-#ifdef _MSC_VER
+#if PLATFORM_WINDOWS
         localtime_s(&tmv, &t);
 #else
         localtime_r(&t, &tmv);

@@ -17,8 +17,10 @@
 #include "crash.h"
 #include "nfd.h"
 #include "app.h"
+#include "platform.h"
+#include "process.h"
 
-#ifdef _WIN32
+#if PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
@@ -40,6 +42,7 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app);
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -111,7 +114,7 @@ public:
             cv_.notify_all();
         }
         // Kill any in-flight marp child so join() doesn't block on a build.
-        KillChild();
+        process_.Cancel();
         if (thread_.joinable()) thread_.join();
     }
 
@@ -200,12 +203,11 @@ private:
         fs::create_directories(buildDir_, ec);
 
         std::string outBase = (buildDir_ / "preview.png").string();
-        // cmd /c so that npx (a .cmd shim) resolves and stderr is capturable.
         std::string errFile = (buildDir_ / "stderr.txt").string();
-        std::string cmd = "cmd /c \"npx marp \"" + deck + "\" --theme-set \"" + theme +
-                          "\" --allow-local-files --images png -o \"" + outBase +
-                          "\" 2> \"" + errFile + "\"\"";
-        int code = RunTracked(cmd);   // killable on shutdown (fast exit)
+        auto args = mg::MarpCommand();
+        args.insert(args.end(), {deck, "--theme-set", theme, "--allow-local-files",
+                                  "--images", "png", "-o", outBase});
+        int code = process_.Run(args, errFile);
         if (quit_) { r.ok = false; r.error = "shutdown"; return r; }
 
         std::string errText;
@@ -243,54 +245,6 @@ private:
         return r;
     }
 
-    // Run `cmd` as a tracked child process so shutdown can kill it (fast exit
-    // instead of joining a thread stuck in a multi-second marp build).
-    // Returns the child's exit code; -1 on spawn failure or if killed.
-    int RunTracked(const std::string &cmd) {
-#ifdef _WIN32
-        STARTUPINFOA si{};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi{};
-        std::vector<char> buf(cmd.begin(), cmd.end());
-        buf.push_back('\0');
-        if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
-                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-            return -1;
-        {
-            std::lock_guard<std::mutex> lk(childMu_);
-            childProc_ = pi.hProcess;
-        }
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        DWORD code = (DWORD)-1;
-        {
-            std::lock_guard<std::mutex> lk(childMu_);
-            GetExitCodeProcess(pi.hProcess, &code);
-            childProc_ = nullptr;
-        }
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        return (int)code;
-#else
-        return std::system(cmd.c_str());
-#endif
-    }
-
-    // Terminate the in-flight child (called from the destructor on shutdown).
-    void KillChild() {
-#ifdef _WIN32
-        std::lock_guard<std::mutex> lk(childMu_);
-        if (childProc_) {
-            // kill the whole tree (cmd -> npx -> node) so std::system-equivalent returns
-            DWORD pid = GetProcessId((HANDLE)childProc_);
-            std::string kill = "cmd /c \"taskkill /PID " + std::to_string(pid) + " /T /F >nul 2>&1\"";
-            std::system(kill.c_str());
-            TerminateProcess((HANDLE)childProc_, (DWORD)-1);
-        }
-#endif
-    }
-
     std::string deck_, theme_;
     unsigned long long generation_ = 0;
     unsigned long long requestGen_ = 0;   // bumped on every Request/Retarget
@@ -298,10 +252,10 @@ private:
     std::thread thread_;
     mutable std::mutex mu_;
     std::condition_variable cv_;
-    bool pending_ = false, building_ = false, quit_ = false, haveResult_ = false;
+    bool pending_ = false, building_ = false, haveResult_ = false;
+    std::atomic<bool> quit_{false};
     BuildResult result_;
-    std::mutex childMu_;
-    void *childProc_ = nullptr;           // in-flight marp child (HANDLE)
+    mg::Process process_;
 };
 
 // ---------------------------------------------------------------------------
@@ -344,6 +298,26 @@ static std::string ReadFile(const fs::path &p) {
     return ss.str();
 }
 
+static bool CaptureFramebuffer(const fs::path &path, int w, int h) {
+    if (w <= 0 || h <= 0) return false;
+    std::vector<unsigned char> pixels((size_t)w * h * 4);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    const size_t stride = (size_t)w * 4;
+    for (int y = 0; y < h / 2; ++y)
+        std::swap_ranges(pixels.begin() + y * stride, pixels.begin() + (y + 1) * stride,
+                         pixels.begin() + (h - y - 1) * stride);
+    SDL_Surface *surface = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_RGBA32, pixels.data(), w * 4);
+    if (!surface) return false;
+    bool ok = SDL_SaveBMP(surface, path.string().c_str());
+    SDL_DestroySurface(surface);
+    return ok;
+}
+
+bool PreviewReady(const App &app) {
+    return !app.slides.empty() && std::all_of(app.slides.begin(), app.slides.end(),
+        [](const auto &slide) { return slide->id != 0 && slide->w > 0 && slide->h > 0; });
+}
+
 void LoadDeck(App &app) {
     std::string text = ReadFile(app.deckPath);
     app.editor.SetText(text);
@@ -378,16 +352,23 @@ void SetViewSlide(App &app, int slide) {
     }
 }
 
-static void SaveDeck(App &app) {
+static bool SaveDeck(App &app) {
     std::ofstream f(app.deckPath, std::ios::binary | std::ios::trunc);
     f << app.editor.GetText();
     f.close();
+    if (!f) {
+        app.status = "save failed";
+        app.lastError = "Cannot save deck: " + app.deckPath.string();
+        LOGE << app.lastError;
+        return false;
+    }
     app.dirtySinceLastSave = false;
     std::error_code ec;
     app.lastWriteTime = fs::last_write_time(app.deckPath, ec);
     app.status = "saved " + app.deckPath.filename().string();
     if (!app.marpCliMissing)
         app.worker->Request();
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -419,42 +400,27 @@ static void UpdateWindowTitle(SDL_Window *window, const App &app) {
     SDL_SetWindowTitle(window, title.c_str());
 }
 
-static std::mutex g_statusMutex; // guards status/lastError from export thread
+// Owned export work: only the main thread reads/writes App state.
+struct ExportResult { int code; std::string message; };
+static mg::Process exportProcess;
+static std::future<ExportResult> exportFuture;
 
-// ---------------------------------------------------------------------------
-// Export: run marp-cli to produce pdf/pptx/html next to the deck.
-// Runs detached; status surfaces via app.status/lastError through a thread.
-// ---------------------------------------------------------------------------
-static void ExportDeck(App &app, const std::string &fmt /* "pdf"|"pptx"|"html" */) {
-    SaveDeck(app); // export the on-disk content, so save first
-    std::string deck = app.deckPath.string();
-    std::string theme = app.themePath.string();
+void ExportDeck(App &app, const std::string &fmt) {
+    if (exportFuture.valid()) { app.status = "export already running"; return; }
+    if (!SaveDeck(app)) return;
     fs::path out = app.deckPath;
     out.replace_extension("." + fmt);
-    std::string outStr = out.string();
-    std::string cwd = app.repoRoot.string();
-
-    std::thread([deck, theme, outStr, cwd, fmt, &app] {
-        LOGI << "exporting " << fmt << " -> " << outStr;
-        std::string errFile = (app.repoRoot / ".gui-build" / ("export_" + fmt + "_err.txt")).string();
-        fs::create_directories(app.repoRoot / ".gui-build");
-        std::string cmd = "cmd /c \"npx marp \"" + deck + "\" --theme-set \"" + theme +
-                          "\" --allow-local-files --" + fmt + " -o \"" + outStr +
-                          "\" 2> \"" + errFile + "\"\"";
-        int code = std::system(cmd.c_str());
-        std::lock_guard<std::mutex> lk(g_statusMutex);
-        if (code == 0) {
-            app.status = "exported " + fs::path(outStr).filename().string();
-            LOGI << "export done: " << outStr;
-        } else {
-            std::ifstream ef(errFile);
-            std::stringstream ss; ss << ef.rdbuf();
-            app.lastError = "export " + fmt + " failed: " + ss.str();
-            LOGE << "export " << fmt << " failed (rc=" << code << "): " << ss.str();
-        }
-    }).detach();
+    auto args = mg::MarpCommand();
+    args.insert(args.end(), {app.deckPath.string(), "--theme-set", app.themePath.string(),
+                             "--allow-local-files", "--" + fmt, "-o", out.string()});
+    fs::path log = app.runtimeDir / ("export_" + fmt + ".txt");
+    app.status = "exporting " + fmt;
+    exportFuture = std::async(std::launch::async, [args, log, out, fmt] {
+        int code = exportProcess.Run(args, log);
+        return ExportResult{code, code == 0 ? "exported " + out.filename().string()
+                                            : "export " + fmt + " failed: " + ReadFile(log)};
+    });
 }
-
 
 // ---------------------------------------------------------------------------
 // File dialogs — native via nativefiledialog-extended (Win32/macOS/Linux).
@@ -462,15 +428,14 @@ static void ExportDeck(App &app, const std::string &fmt /* "pdf"|"pptx"|"html" *
 // after the modal (an NFD dialog can swallow the modifier key-up and leave
 // ImGui's KeyCtrl stuck — the ctrl+wheel trap).
 // ---------------------------------------------------------------------------
-static bool OpenFileDialog(const char *suggestDir, char *outPath, size_t outSize) {
+static bool OpenFileDialog(const char *suggestDir, std::string &outPath) {
     nfdu8char_t *out = nullptr;
     nfdu8filteritem_t filter = {"Markdown", "md,markdown"};
     nfdresult_t r = NFD_OpenDialogU8(&out, &filter, 1,
                                      (suggestDir && *suggestDir) ? suggestDir : nullptr);
     ImGui::GetIO().ClearInputKeys(); // NFD modal may swallow modifier key-up
     if (r == NFD_OKAY && out) {
-        strncpy(outPath, out, outSize - 1);
-        outPath[outSize - 1] = '\0';
+        outPath = out;
         NFD_FreePathU8(out);
         return true;
     }
@@ -479,15 +444,14 @@ static bool OpenFileDialog(const char *suggestDir, char *outPath, size_t outSize
     return false;
 }
 
-static bool SaveFileDialog(const char *suggestName, char *outPath, size_t outSize) {
+static bool SaveFileDialog(const char *suggestName, std::string &outPath) {
     nfdu8char_t *out = nullptr;
     nfdu8filteritem_t filter = {"Markdown", "md,markdown"};
     nfdresult_t r = NFD_SaveDialogU8(&out, &filter, 1, nullptr,
                                      (suggestName && *suggestName) ? suggestName : "deck.md");
     ImGui::GetIO().ClearInputKeys(); // NFD modal may swallow modifier key-up
     if (r == NFD_OKAY && out) {
-        strncpy(outPath, out, outSize - 1);
-        outPath[outSize - 1] = '\0';
+        outPath = out;
         NFD_FreePathU8(out);
         return true;
     }
@@ -502,27 +466,50 @@ int main(int argc, char *argv[]) {
 
     // --- App state ------------------------------------------------------------
     App app;
-    app.deckPath = fs::absolute(argc > 1 ? argv[1] : "slides.md");
-
-    // App root: where themes/ lives. Prefer the repo root derived from the exe
-    // location (gui/build/Release/exe → repo is 3 up), falling back to cwd.
-    fs::path exeDir;
-#ifdef _WIN32
-    {
-        char buf[MAX_PATH];
-        GetModuleFileNameA(nullptr, buf, MAX_PATH);
-        exeDir = fs::path(buf).parent_path();
-    }
+    std::string deckArg;
+    fs::path screenshot;
+#ifdef MARP_GUI_TESTS
+    bool testDeck = true; // never modify a caller's deck during automation
 #else
-    exeDir = fs::current_path();
+    bool testDeck = false;
 #endif
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--screenshot" && i + 1 < argc) screenshot = fs::absolute(argv[++i]);
+        else if (arg == "--test-deck" && i + 1 < argc) { deckArg = argv[++i]; testDeck = true; }
+        else if (!arg.empty() && arg[0] != '-') deckArg = arg;
+        else { std::fprintf(stderr, "Usage: marp_gui [deck.md] [--screenshot output.bmp]\n"); return 1; }
+    }
+
+    // SDL returns Contents/Resources for a bundle, or the executable directory.
+    const char *base = SDL_GetBasePath();
     fs::path root = fs::current_path();
-    for (fs::path p = exeDir; !p.empty(); p = p.parent_path()) {
-        if (fs::exists(p / "themes" / "programmer.css")) { root = p; break; }
+    for (fs::path p = base ? fs::path(base) : root; !p.empty(); p = p.parent_path()) {
+        if (fs::is_directory(p / "themes")) { root = p; break; }
         if (p == p.parent_path()) break;
     }
     app.repoRoot = root;
+    mg::ConfigureMarpEnvironment(root);
+    char *pref = SDL_GetPrefPath("marp-gui", "Marp GUI");
+    if (!pref) { LOGE << SDL_GetError(); return 1; }
+    fs::path userDir = pref;
+    SDL_free(pref);
+    app.logPath = userDir / "marp_gui.log";
+    app.runtimeDir = userDir / ("session-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(app.runtimeDir);
+    app.deckPath = fs::absolute(deckArg.empty() ? "slides.md" : deckArg);
+    if (testDeck) {
+        fs::path source = deckArg.empty() && !fs::is_regular_file(app.deckPath)
+            ? root / "slides.md" : app.deckPath;
+        app.deckPath = app.runtimeDir / "测试 deck $literal 'quote'.md";
+        fs::copy_file(source, app.deckPath);
+    } else if (deckArg.empty() && !fs::is_regular_file(app.deckPath)) {
+        app.deckPath = userDir / "slides.md";
+        if (!fs::exists(app.deckPath)) fs::copy_file(root / "slides.md", app.deckPath);
+    }
     app.themePath = app.repoRoot / "themes" / "programmer.css";
+    app.screenshotPath = screenshot;
 
     // --- SDL + OpenGL -----------------------------------------------------------
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -534,22 +521,35 @@ int main(int argc, char *argv[]) {
     if (NFD_Init() != NFD_OKAY)
         LOGW << "NFD_Init failed: " << (NFD_GetError() ? NFD_GetError() : "(unknown)");
 
+#if PLATFORM_MACOS
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+#endif
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+#if PLATFORM_MACOS
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    const char *glslVersion = "#version 150";
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    const char *glslVersion = "#version 330 core";
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
     SDL_Window *window = SDL_CreateWindow("Marp GUI - slides.md",
-        1440, 900, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+        1440, 900, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 1;
     }
     SDL_GLContext glCtx = SDL_GL_CreateContext(window);
-    SDL_GL_MakeCurrent(window, glCtx);
+    if (!glCtx || !SDL_GL_MakeCurrent(window, glCtx)) {
+        LOGE << "OpenGL context failed: " << SDL_GetError();
+        SDL_DestroyWindow(window); NFD_Quit(); SDL_Quit(); return 1;
+    }
     SDL_GL_SetSwapInterval(1); // vsync
 
     // SDL3 no longer enables text input by default. The editor (TextEditor)
@@ -580,11 +580,16 @@ int main(int argc, char *argv[]) {
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+#if PLATFORM_MACOS
+    io.ConfigMacOSXBehaviors = true;
+#endif
+    std::string iniPath = (userDir / "imgui.ini").string();
+    io.IniFilename = iniPath.c_str();
 
     // DPI scaling: system DPI scales both widget
     // sizes and font density so the UI isn't tiny on HiDPI displays.
     float dpiScale = 1.0f;
-#ifdef _WIN32
+#if PLATFORM_WINDOWS
     dpiScale = (float)GetDpiForSystem() / 96.0f;
 #endif
     if (dpiScale <= 0.0f) dpiScale = 1.0f;
@@ -597,7 +602,7 @@ int main(int argc, char *argv[]) {
     ImGui::StyleColorsDark();
 
     ImGui_ImplSDL3_InitForOpenGL(window, glCtx);
-    ImGui_ImplOpenGL3_Init("#version 330 core");
+    ImGui_ImplOpenGL3_Init(glslVersion);
 
     // Default UI theme: Programmer (matches themes/programmer.css).
     themes::ApplyTheme(0);
@@ -605,37 +610,32 @@ int main(int argc, char *argv[]) {
     ScanMarpThemes(app);
     app.themePath = SelectedMarpThemePath(app);
 
-    // Monospace font for the editor. Loaded at base size; style.FontScaleMain
-    // (set above) applies the DPI scaling — don't multiply here too.
-    // Base = Consolas (Latin/code); merge Microsoft YaHei for CJK/UTF-8 so
-    // Chinese markdown renders instead of tofu boxes.
-    ImFont *mono = io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/consola.ttf", 16.0f);
-    if (!mono) mono = io.Fonts->AddFontDefault();
-    {
-        ImFontConfig cfg;
-        cfg.MergeMode = true;             // merge CJK glyphs into the base font
-        cfg.PixelSnapH = true;
-        const ImWchar *cjk = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
-        ImFont *cjkFont = io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/msyh.ttc",
-                                                       16.0f, &cfg, cjk);
-        if (!cjkFont) {
-            // Fall back to full CJK range if YaHei missing (older Windows).
-            io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/simhei.ttf", 16.0f, &cfg,
-                                         io.Fonts->GetGlyphRangesChineseFull());
+    // Check availability before loading: ImGui asserts for nonexistent fonts.
+#if PLATFORM_MACOS
+    const char *monoPath = "/System/Library/Fonts/Menlo.ttc";
+    const char *uiPath = "/System/Library/Fonts/Supplemental/Arial.ttf";
+    const char *cjkPath = "/System/Library/Fonts/PingFang.ttc";
+    if (!fs::exists(cjkPath)) cjkPath = "/System/Library/Fonts/Supplemental/Songti.ttc";
+#else
+    const char *monoPath = "C:/Windows/Fonts/consola.ttf";
+    const char *uiPath = "C:/Windows/Fonts/segoeui.ttf";
+    const char *cjkPath = "C:/Windows/Fonts/msyh.ttc";
+    if (!fs::exists(cjkPath)) cjkPath = "C:/Windows/Fonts/simhei.ttf";
+#endif
+    auto loadFont = [&](const char *path) {
+        ImFont *font = fs::exists(path) ? io.Fonts->AddFontFromFileTTF(path, 16.0f) : nullptr;
+        if (!font) font = io.Fonts->AddFontDefault();
+        if (fs::exists(cjkPath)) {
+            ImFontConfig cfg;
+            cfg.MergeMode = true;
+            cfg.PixelSnapH = true;
+            io.Fonts->AddFontFromFileTTF(cjkPath, 16.0f, &cfg,
+                                       io.Fonts->GetGlyphRangesChineseFull());
         }
-    }
-    io.Fonts->Build();
-    // UI font also needs CJK (menus, dialogs).
-    ImFont *ui = io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/segoeui.ttf", 16.0f);
-    if (!ui) ui = io.Fonts->AddFontDefault();
-    {
-        ImFontConfig cfg;
-        cfg.MergeMode = true;
-        cfg.PixelSnapH = true;
-        io.Fonts->AddFontFromFileTTF("C:/Windows/Fonts/msyh.ttc", 16.0f, &cfg,
-                                     io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-    }
-    io.Fonts->Build();
+        return font;
+    };
+    ImFont *mono = loadFont(monoPath);
+    ImFont *ui = loadFont(uiPath);
     io.FontDefault = ui;
 
     // --- Editor setup --------------------------------------------------------------
@@ -657,15 +657,17 @@ int main(int argc, char *argv[]) {
                                ImGuiTestRunFlags_RunFromCommandLine);
 #endif
 
-    // --- Dependency check (async: probe npx/marp-cli off the main thread) --------
-    // Don't block startup on `npx --version` (can be slow on cold npm cache).
-    // Assume present until the probe says otherwise; flip marpCliMissing and
-    // pop the dialog only if the probe fails.
-    auto probeResult = std::make_shared<std::atomic<int>>(-1); // -1 running, 0 ok, !=0 missing
-    std::thread([probeResult] {
-        int rc = std::system("cmd /c \"npx --no-install marp --version >nul 2>&1\"");
-        probeResult->store(rc);
-    }).detach();
+    mg::Process probeProcess;
+    std::future<int> probeFuture;
+    auto startProbe = [&] {
+        auto args = mg::MarpCommand();
+        args.push_back("--version");
+        fs::path log = app.runtimeDir / "probe.txt";
+        probeFuture = std::async(std::launch::async, [&, args, log] {
+            return probeProcess.Run(args, log);
+        });
+    };
+    startProbe();
     if (!fs::exists(app.themePath)) {
         app.lastError = "Theme not found: " + app.themePath.string();
         LOGE << app.lastError;
@@ -676,12 +678,15 @@ int main(int argc, char *argv[]) {
          << " root=" << app.repoRoot.string();
 
     // --- Build worker ---------------------------------------------------------------
-    fs::path buildDir = app.repoRoot / ".gui-build";
+    fs::path buildDir = app.runtimeDir / "preview";
     app.worker = std::make_unique<BuildWorker>(
         app.deckPath.string(), app.themePath.string(), buildDir);
     app.worker->Request(); // initial build (probe may flip marpCliMissing later)
 
     bool running = true;
+    auto launchTime = std::chrono::steady_clock::now();
+    int captureFrames = 0;
+    bool captureFailed = false;
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -695,16 +700,27 @@ int main(int argc, char *argv[]) {
         // --- Periodic logic ---------------------------------------------------------
         auto now = std::chrono::steady_clock::now();
 
-        // Consume the async marp-cli probe result once it lands.
-        if (probeResult->load() != -1) {
-            if (probeResult->load() != 0 && !app.marpCliMissing) {
-                app.marpCliMissing = true;   // probe failed → show the dialog
-                app.lastError = "marp-cli not found — see the dialog";
-                LOGW << "marp-cli probe failed (rc=" << probeResult->load() << ")";
-            } else if (probeResult->load() == 0) {
+        if (probeFuture.valid() && probeFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            int code = probeFuture.get();
+            bool wasMissing = app.marpCliMissing;
+            app.marpCliMissing = code != 0;
+            if (code != 0) {
+                app.lastError = "marp-cli not found — install Node.js and @marp-team/marp-cli";
+                LOGW << app.lastError;
+            } else {
+                if (wasMissing) {
+                    app.lastError.clear();
+                    app.worker->Request();
+                }
                 LOGI << "marp-cli detected";
             }
-            *probeResult = -1; // handled
+        }
+        if (exportFuture.valid() && exportFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            auto result = exportFuture.get();
+            app.status = result.message;
+            if (result.code != 0) app.lastError = result.message;
+            else app.lastError.clear();
+            LOGI << result.message;
         }
 
         // Debounce: schedule rebuild ~800 ms after last edit.
@@ -775,18 +791,18 @@ int main(int argc, char *argv[]) {
         // --- Menu bar --------------------------------------------------------------
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("Open...", "Ctrl+O")) {
-                    char path[MAX_PATH] = {};
-                    if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path, sizeof(path))) {
+                if (ImGui::MenuItem("Open...", (io.ConfigMacOSXBehaviors ? "Cmd+O" : "Ctrl+O"))) {
+                    std::string path;
+                    if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path)) {
                         app.deckPath = fs::absolute(path);
                         SwitchDeck(app);
                     }
                 }
-                if (ImGui::MenuItem("Save", "Ctrl+S")) SaveDeck(app);
+                if (ImGui::MenuItem("Save", (io.ConfigMacOSXBehaviors ? "Cmd+S" : "Ctrl+S"))) SaveDeck(app);
                 if (ImGui::MenuItem("Save As...")) {
-                    char path[MAX_PATH];
+                    std::string path;
                     std::string cur = app.deckPath.string();
-                    if (SaveFileDialog(app.deckPath.filename().string().c_str(), path, sizeof(path))) {
+                    if (SaveFileDialog(app.deckPath.filename().string().c_str(), path)) {
                         app.deckPath = fs::absolute(path);
                         SaveDeck(app);       // write buffer to the new path
                         SwitchDeck(app);     // reload from it + rebuild cleanly
@@ -799,17 +815,18 @@ int main(int argc, char *argv[]) {
                     if (ImGui::MenuItem("HTML")) ExportDeck(app, "html");
                     ImGui::EndMenu();
                 }
-                if (ImGui::MenuItem("Commands...", "Ctrl+P")) app.showPalette = true;
+                if (ImGui::MenuItem("Commands...", (io.ConfigMacOSXBehaviors ? "Cmd+P" : "Ctrl+P"))) app.showPalette = true;
                 ImGui::Separator();
                 if (ImGui::MenuItem("Settings...")) app.showSettings = true;
                 ImGui::Separator();
-                if (ImGui::MenuItem("Exit")) running = false;
+                if (ImGui::MenuItem(io.ConfigMacOSXBehaviors ? "Quit" : "Exit",
+                                    io.ConfigMacOSXBehaviors ? "Cmd+Q" : nullptr)) running = false;
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Edit")) {
-                if (ImGui::MenuItem("Undo", "Ctrl+Z", false, app.editor.CanUndo()))
+                if (ImGui::MenuItem("Undo", (io.ConfigMacOSXBehaviors ? "Cmd+Z" : "Ctrl+Z"), false, app.editor.CanUndo()))
                     app.editor.Undo();
-                if (ImGui::MenuItem("Redo", "Ctrl+Y", false, app.editor.CanRedo()))
+                if (ImGui::MenuItem("Redo", (io.ConfigMacOSXBehaviors ? "Cmd+Shift+Z" : "Ctrl+Y"), false, app.editor.CanRedo()))
                     app.editor.Redo();
                 ImGui::EndMenu();
             }
@@ -825,8 +842,8 @@ int main(int argc, char *argv[]) {
             palette::Command cmd = palette::Render(app.showPalette, app);
             switch (cmd) {
             case palette::Command::Open: {
-                char path[MAX_PATH] = {};
-                if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path, sizeof(path))) {
+                std::string path;
+                if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path)) {
                     app.deckPath = fs::absolute(path);
                     SwitchDeck(app);
                 }
@@ -834,9 +851,9 @@ int main(int argc, char *argv[]) {
             }
             case palette::Command::Save: SaveDeck(app); break;
             case palette::Command::SaveAs: {
-                char path[MAX_PATH];
+                std::string path;
                 std::string cur = app.deckPath.string();
-                if (SaveFileDialog(app.deckPath.filename().string().c_str(), path, sizeof(path))) {
+                if (SaveFileDialog(app.deckPath.filename().string().c_str(), path)) {
                     app.deckPath = fs::absolute(path);
                     SaveDeck(app);
                     SwitchDeck(app);
@@ -871,24 +888,11 @@ int main(int argc, char *argv[]) {
             ImGui::Spacing();
             ImGui::TextDisabled("Quick install:  npm i -g @marp-team/marp-cli");
             ImGui::Separator();
-            bool probing = (probeResult->load() == -1);
+            bool probing = probeFuture.valid();
             if (probing) ImGui::BeginDisabled();
-            if (ImGui::Button(probing ? "Checking..." : "Retry", ImVec2(140, 0))) {
-                // re-probe async after the user installs
-                std::thread([probeResult] {
-                    int rc = std::system("cmd /c \"npx --no-install marp --version >nul 2>&1\"");
-                    probeResult->store(rc);
-                }).detach();
-            }
+            if (ImGui::Button(probing ? "Checking..." : "Retry", ImVec2(140, 0))) startProbe();
             if (probing) ImGui::EndDisabled();
-            // probe succeeded → close dialog, kick the build
-            if (probeResult->load() == 0 && app.marpCliMissing) {
-                app.marpCliMissing = false;
-                app.lastError.clear();
-                app.worker->Request();
-                *probeResult = -1;
-                ImGui::CloseCurrentPopup();
-            }
+            if (!app.marpCliMissing) ImGui::CloseCurrentPopup();
             ImGui::SameLine();
             if (ImGui::Button("Close", ImVec2(140, 0)))
                 running = false; // close the app
@@ -915,7 +919,7 @@ int main(int argc, char *argv[]) {
             if (ImGui::Checkbox("Log to file", &app.logToFile)) {
                 if (app.logToFile) {
                     mg::Log::Instance().SetFileOutput(
-                        (app.repoRoot / ".gui-build" / "marp_gui.log").string(), true);
+                        app.logPath.string(), true);
                     LOGI << "log to file enabled";
                 } else {
                     LOGI << "log to file disabled";
@@ -1189,11 +1193,15 @@ int main(int argc, char *argv[]) {
         // handled here — the TextEditor owns Ctrl+Z/Y when focused, and the
         // Edit menu covers the rest. Intercepting them globally broke typing.
         if (!app.showSettings && !app.showAbout && !app.showPalette) {
+            // ImGui maps the physical Command key to KeyCtrl on macOS.
+#if PLATFORM_MACOS
+            if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Q, false)) running = false;
+#endif
             if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
                 SaveDeck(app);
             if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
-                char path[MAX_PATH] = {};
-                if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path, sizeof(path))) {
+                std::string path;
+                if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path)) {
                     app.deckPath = fs::absolute(path);
                     SwitchDeck(app);
                 }
@@ -1203,15 +1211,29 @@ int main(int argc, char *argv[]) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_P, false))
             app.showPalette = !app.showPalette;
 
-#ifdef MARP_GUI_TESTS
-        ImGuiTestEngine_ShowTestEngineWindows(testEngine, nullptr);
-#endif
-
         ImGui::Render();
-        glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+        int pixelW = 0, pixelH = 0;
+        SDL_GetWindowSizeInPixels(window, &pixelW, &pixelH);
+        glViewport(0, 0, pixelW, pixelH);
         glClearColor(0.10f, 0.10f, 0.10f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        if (!app.screenshotPath.empty() && PreviewReady(app) && ++captureFrames > 30) {
+            if (!CaptureFramebuffer(app.screenshotPath, pixelW, pixelH)) {
+                LOGE << "Screenshot failed: " << SDL_GetError();
+                captureFailed = true;
+            } else LOGI << "Screenshot saved: " << app.screenshotPath.string()
+                        << " (" << pixelW << "x" << pixelH << ")";
+            app.screenshotPath.clear();
+            captureFrames = 0;
+            if (!screenshot.empty()) running = false;
+        }
+        if (!screenshot.empty() && now - launchTime > std::chrono::seconds(60)) {
+            LOGE << "Timed out waiting for preview: " << app.lastError;
+            captureFailed = true;
+            running = false;
+        }
 
 #ifdef MARP_GUI_TESTS
         // Post-swap: run test engine hooks; quit shortly after the queue drains.
@@ -1240,6 +1262,10 @@ int main(int argc, char *argv[]) {
                     std::chrono::steady_clock::now() - shutdownStart).count() << " ms total";
     };
 
+    probeProcess.Cancel();
+    exportProcess.Cancel();
+    if (probeFuture.valid()) probeFuture.get();
+    if (exportFuture.valid()) exportFuture.get();
     app.worker.reset(); // stop worker before GL teardown
     stepMs("worker stop");
     app.slides.clear();
@@ -1267,9 +1293,11 @@ int main(int argc, char *argv[]) {
     SDL_Quit();
     stepMs("SDL_Quit");
     NFD_Quit();
+    std::error_code cleanupError;
+    fs::remove_all(app.runtimeDir, cleanupError);
 #ifdef MARP_GUI_TESTS
     return failed == 0 ? 0 : 2;
 #else
-    return 0;
+    return captureFailed ? 1 : 0;
 #endif
 }

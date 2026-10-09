@@ -20,9 +20,9 @@ A clean starter deck using the **programmer** theme.
 
 - A **Marp** slide deck — markdown in, slides out
 - Edit `slides.md` on the left, preview live on the right
-- `Ctrl+S` saves; the preview rebuilds automatically
+- `Cmd+S` (macOS) / `Ctrl+S` (Windows) saves; the preview rebuilds automatically
 
-> Press `Ctrl+P` for the command palette. File → Export for PDF/PPTX/HTML.
+> Press `Cmd+P` (macOS) / `Ctrl+P` (Windows) for commands. File → Export for PDF/PPTX/HTML.
 
 ---
 
