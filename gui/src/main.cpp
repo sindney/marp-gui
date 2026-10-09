@@ -110,6 +110,8 @@ public:
             quit_ = true;
             cv_.notify_all();
         }
+        // Kill any in-flight marp child so join() doesn't block on a build.
+        KillChild();
         if (thread_.joinable()) thread_.join();
     }
 
@@ -203,7 +205,8 @@ private:
         std::string cmd = "cmd /c \"npx marp \"" + deck + "\" --theme-set \"" + theme +
                           "\" --allow-local-files --images png -o \"" + outBase +
                           "\" 2> \"" + errFile + "\"\"";
-        int code = std::system(cmd.c_str());
+        int code = RunTracked(cmd);   // killable on shutdown (fast exit)
+        if (quit_) { r.ok = false; r.error = "shutdown"; return r; }
 
         std::string errText;
         {
@@ -240,6 +243,54 @@ private:
         return r;
     }
 
+    // Run `cmd` as a tracked child process so shutdown can kill it (fast exit
+    // instead of joining a thread stuck in a multi-second marp build).
+    // Returns the child's exit code; -1 on spawn failure or if killed.
+    int RunTracked(const std::string &cmd) {
+#ifdef _WIN32
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        std::vector<char> buf(cmd.begin(), cmd.end());
+        buf.push_back('\0');
+        if (!CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+            return -1;
+        {
+            std::lock_guard<std::mutex> lk(childMu_);
+            childProc_ = pi.hProcess;
+        }
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = (DWORD)-1;
+        {
+            std::lock_guard<std::mutex> lk(childMu_);
+            GetExitCodeProcess(pi.hProcess, &code);
+            childProc_ = nullptr;
+        }
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return (int)code;
+#else
+        return std::system(cmd.c_str());
+#endif
+    }
+
+    // Terminate the in-flight child (called from the destructor on shutdown).
+    void KillChild() {
+#ifdef _WIN32
+        std::lock_guard<std::mutex> lk(childMu_);
+        if (childProc_) {
+            // kill the whole tree (cmd -> npx -> node) so std::system-equivalent returns
+            DWORD pid = GetProcessId((HANDLE)childProc_);
+            std::string kill = "cmd /c \"taskkill /PID " + std::to_string(pid) + " /T /F >nul 2>&1\"";
+            std::system(kill.c_str());
+            TerminateProcess((HANDLE)childProc_, (DWORD)-1);
+        }
+#endif
+    }
+
     std::string deck_, theme_;
     unsigned long long generation_ = 0;
     unsigned long long requestGen_ = 0;   // bumped on every Request/Retarget
@@ -249,6 +300,8 @@ private:
     std::condition_variable cv_;
     bool pending_ = false, building_ = false, quit_ = false, haveResult_ = false;
     BuildResult result_;
+    std::mutex childMu_;
+    void *childProc_ = nullptr;           // in-flight marp child (HANDLE)
 };
 
 // ---------------------------------------------------------------------------
@@ -1182,8 +1235,17 @@ int main(int argc, char *argv[]) {
     }
 
     // --- Shutdown --------------------------------------------------------------
+    auto shutdownStart = std::chrono::steady_clock::now();
+    auto stepMs = [&](const char *what) {
+        LOGD << "shutdown: " << what << " took "
+             << std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - shutdownStart).count() << " ms total";
+    };
+
     app.worker.reset(); // stop worker before GL teardown
+    stepMs("worker stop");
     app.slides.clear();
+    stepMs("slides clear");
 
 #ifdef MARP_GUI_TESTS
     int passed = 0, failed = 0;
@@ -1199,9 +1261,13 @@ int main(int argc, char *argv[]) {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
+    stepMs("imgui shutdown");
     SDL_GL_DestroyContext(glCtx);
+    stepMs("GL context destroy");
     SDL_DestroyWindow(window);
+    stepMs("window destroy");
     SDL_Quit();
+    stepMs("SDL_Quit");
 #ifdef MARP_GUI_TESTS
     return failed == 0 ? 0 : 2;
 #else
