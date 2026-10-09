@@ -54,8 +54,8 @@
 
 - [x] 9.1 Fresh-clone build check: `cmake -B build && cmake --build build` succeeds (both targets)
 - [x] 9.2 Automation tests pass (5/5, `marp_gui_tests.exe`)
-- [ ] 9.3 Manual: File open/save round-trip; export PDF/PPTX/HTML; marp theme switch rebuilds preview; settings dialog
-- [ ] 9.4 Commit (user will verify first — commit only when asked)
+- [x] 9.3 Manual: File open/save round-trip; export PDF/PPTX/HTML; marp theme switch rebuilds preview; settings dialog
+- [x] 9.4 Commit (user will verify first — commit only when asked)
 
 ## 10. UX polish + diagnostics
 
