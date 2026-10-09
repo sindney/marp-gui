@@ -500,17 +500,9 @@ static bool SaveFileDialog(const char *suggestName, char *outPath, size_t outSiz
 int main(int argc, char *argv[]) {
     mg::InstallCrashHandler(); // log + minidump on unhandled exception/abort
 
-    // Crash-handler self-test: MARP_CRASH_TEST=1 forces an access violation so
-    // we can verify the symbolized stack trace + minidump. (Dev only.)
-    if (std::getenv("MARP_CRASH_TEST")) {
-        volatile int *p = nullptr;
-        *p = 42;
-    }
-
     // --- App state ------------------------------------------------------------
     App app;
     app.deckPath = fs::absolute(argc > 1 ? argv[1] : "slides.md");
-    if (const char *d = std::getenv("MARP_DECK")) app.deckPath = fs::absolute(d);
 
     // App root: where themes/ lives. Prefer the repo root derived from the exe
     // location (gui/build/Release/exe → repo is 3 up), falling back to cwd.

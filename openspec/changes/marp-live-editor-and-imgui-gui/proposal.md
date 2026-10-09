@@ -1,6 +1,6 @@
 ## Why
 
-A working Marp live-editing setup exists at `G:\Docs\Slides\AI` (Python live server + browser editor + `programmer` theme), but it lives outside version control in a slide-content folder. We want it in this dedicated repo (`marp-gui`) as a reusable tool, and additionally want a native desktop app (Dear ImGui) that provides the same left-editor / right-live-preview workflow without needing a browser.
+A working Marp live-editing setup exists at an external slide-content folder (outside version control) (Python live server + browser editor + `programmer` theme), but it lives outside version control in a slide-content folder. We want it in this dedicated repo (`marp-gui`) as a reusable tool, and additionally want a native desktop app (Dear ImGui) that provides the same left-editor / right-live-preview workflow without needing a browser.
 
 ## What Changes
 
@@ -29,7 +29,7 @@ A working Marp live-editing setup exists at `G:\Docs\Slides\AI` (Python live ser
 
 ## Impact
 
-- **New code**: `web/` (Python + HTML/JS, synced from `G:\Docs\Slides\AI`), `themes/programmer.css`, `slides.md`, `gui/` (C++17, CMake), root `package.json` for marp-cli.
+- **New code**: `web/` (Python + HTML/JS, synced from an external slide-content folder (outside version control)), `themes/programmer.css`, `slides.md`, `gui/` (C++17, CMake), root `package.json` for marp-cli.
 - **Dependencies**: Python 3 (stdlib only), Node.js + `@marp-team/marp-cli` (already used by source setup), SDL3, Dear ImGui, ImGuiColorTextEdit, OpenGL3, a C++17 compiler.
 - **Platforms**: Windows primary (start.bat, MSVC); GUI code should stay portable (SDL3/OpenGL3 are cross-platform).
 - No external APIs or services affected.

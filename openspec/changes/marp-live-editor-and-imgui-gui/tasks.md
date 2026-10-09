@@ -1,7 +1,7 @@
 ## 1. Repo scaffolding
 
 - [x] 1.1 Create `package.json` at repo root with `@marp-team/marp-cli` (^4.5.1) devDependency; run `npm install`
-- [x] 1.2 Copy `G:\Docs\Slides\AI\programmer.css` → `themes/programmer.css` (verbatim)
+- [x] 1.2 Copy `the original slide folder\programmer.css` → `themes/programmer.css` (verbatim)
 - [x] 1.3 Create root `slides.md` hello-world deck (front matter: marp, theme programmer, 16:9, paginate; 3 slides: title/lead, bullets, code sample — no image references)
 - [x] 1.4 Verify sample build: `npx marp slides.md --theme-set themes/programmer.css --html -o .build/slides.html`
 

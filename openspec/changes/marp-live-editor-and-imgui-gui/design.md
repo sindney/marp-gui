@@ -1,6 +1,6 @@
 ## Context
 
-The source setup at `G:\Docs\Slides\AI` proves the workflow: `serve.py` (Python stdlib only — ThreadingHTTPServer + hand-rolled RFC 6455 WebSocket) watches `slides.md` + `programmer.css` by MD5 polling, rebuilds via `npx marp`, and pushes `reload` over WS. `editor.html` (CodeMirror via esm.sh) autosaves through `POST /__save` and polls `/__hash` to reload an iframe preview, following the cursor's slide via `location.hash`.
+The source setup at an external slide-content folder (outside version control) proves the workflow: `serve.py` (Python stdlib only — ThreadingHTTPServer + hand-rolled RFC 6455 WebSocket) watches `slides.md` + `programmer.css` by MD5 polling, rebuilds via `npx marp`, and pushes `reload` over WS. `editor.html` (CodeMirror via esm.sh) autosaves through `POST /__save` and polls `/__hash` to reload an iframe preview, following the cursor's slide via `location.hash`.
 
 This change ports that setup verbatim into `web/` of this repo, and adds a native C++ app (`gui/`) replicating the same split editor + live preview without a browser.
 
@@ -15,7 +15,7 @@ This change ports that setup verbatim into `web/` of this repo, and adds a nativ
 **Non-Goals:**
 - No embedded browser / WebView2 in the GUI (rejected — heavy dependency).
 - No presenter mode, PDF/PPTX export UI, or multi-deck management in the GUI (marp-cli CLI remains available for that).
-- No changes to the source folder `G:\Docs\Slides\AI` (one-way sync).
+- No changes to the source folder an external slide-content folder (outside version control) (one-way sync).
 - No Linux/macOS packaging or CI in this change.
 
 ## Decisions
@@ -61,7 +61,7 @@ GUI takes the deck path as argv[1] (default `slides.md` in cwd) and locates the 
 - **marp-cli rebuild latency (~1–3 s per build)** → acceptable for preview; debounce + build-in-progress coalescing; show a "building…" indicator so lag is legible.
 - **marp-cli PNG output requires Chrome/Edge** (it drives a headless browser) → detect failure at startup and show a clear error message; document requirement in README.
 - **ImGuiColorTextEdit has no first-class Markdown highlighter** → ship with plain-text or a lightweight custom tokenizer; highlighting is cosmetic, not blocking.
-- **One-way sync from `G:\Docs\Slides\AI` will drift** → repo is now source of truth; note in README that the G: copy is deprecated.
+- **One-way sync from an external slide-content folder (outside version control) will drift** → repo is now source of truth; note in README that the old copy is deprecated.
 - **WebSocket impl in serve.py is minimal** (no fragmentation/pong) → it is proven in daily use; port verbatim rather than rewrite.
 
 ## Open Questions
