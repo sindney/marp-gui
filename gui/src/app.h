@@ -22,6 +22,8 @@ struct App {
     TextEditor editor;
     fs::path deckPath;
     RecentFiles recentFiles;
+    fs::path editorColorSchemePath;
+    int editorColorSchemeIndex = 0;
     fs::path themePath;                       // currently selected marp theme css
     fs::path repoRoot;                        // immutable resources (bundle or repo)
     fs::path runtimeDir;                      // writable, per-instance work directory

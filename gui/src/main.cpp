@@ -12,6 +12,7 @@
 #include "TextEditor.h"
 #include "themes.h"
 #include "markdown_lang.h"
+#include "editor_colors.h"
 #include "command_palette.h"
 #include "log.h"
 #include "crash.h"
@@ -521,6 +522,8 @@ int main(int argc, char *argv[]) {
     }
     app.repoRoot = root;
     app.recentFiles.Load((testDeck ? app.runtimeDir : userDir) / "recent-files.txt");
+    app.editorColorSchemePath = (testDeck ? app.runtimeDir : userDir) / "editor-color-scheme.txt";
+    app.editorColorSchemeIndex = editor_colors::Load(app.editorColorSchemePath);
     mg::ConfigureMarpEnvironment(root);
     app.deckPath = fs::absolute(deckArg.empty() ? "slides.md" : deckArg);
     if (testDeck) {
@@ -664,7 +667,7 @@ int main(int argc, char *argv[]) {
 
     // --- Editor setup --------------------------------------------------------------
     app.editor.SetLanguageDefinition(markdown_lang::Markdown());
-    app.editor.SetPalette(TextEditor::GetProgrammerPalette());
+    app.editor.SetPalette(editor_colors::kSchemes[app.editorColorSchemeIndex].palette());
     LoadDeck(app);
 
 #ifdef MARP_GUI_TESTS
@@ -961,6 +964,21 @@ int main(int argc, char *argv[]) {
                     bool sel = (i == themes::GetCurrentThemeIndex());
                     if (ImGui::Selectable(themes::kThemes[i].display_name, sel))
                         themes::ApplyTheme(i);
+                }
+                ImGui::EndCombo();
+            }
+
+            ImGui::TextUnformatted("Editor Color Scheme");
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::BeginCombo("##editorcolors", editor_colors::kSchemes[app.editorColorSchemeIndex].name)) {
+                for (int i = 0; i < editor_colors::kSchemeCount; ++i) {
+                    bool selected = (i == app.editorColorSchemeIndex);
+                    if (ImGui::Selectable(editor_colors::kSchemes[i].name, selected)) {
+                        app.editorColorSchemeIndex = i;
+                        app.editor.SetPalette(editor_colors::kSchemes[i].palette());
+                        editor_colors::Save(app.editorColorSchemePath, i);
+                    }
+                    if (selected) ImGui::SetItemDefaultFocus();
                 }
                 ImGui::EndCombo();
             }

@@ -37,6 +37,10 @@ Turn off **Settings → Save recent file list** to clear the list and stop
 recording file history. This preference persists across restarts.
 Hold **Up** or **Down** in the command palette to move through results.
 
+**Settings → Editor Color Scheme** offers Programmer, Dark, Light, and Retro
+Blue palettes for the editor. Changes apply immediately and persist across
+restarts. **UI Theme** controls the application menus and panels separately.
+
 **Tab** inserts spaces to the next four-column tab stop by default. Disable
 **Settings → Use spaces for tabs** to insert literal tabs. **Shift+Tab**
 unindents the current line or selected lines; **Shift+Backspace** and

@@ -7,6 +7,7 @@
 #include "platform.h"
 #include "themes.h"
 #include "markdown_lang.h"
+#include "editor_colors.h"
 #include "input_state.h"
 
 #include <fstream>
@@ -41,6 +42,21 @@ static void Capture(ImGuiTestContext *ctx, App &app, const char *name) {
 struct DeckSwitchVars { fs::path pendingPath; };
 
 void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_color_scheme_persistence");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            fs::path file = a.runtimeDir / "test-editor-colors.txt";
+            IM_CHECK_EQ(editor_colors::Load(file), 0);
+            for (int i = 0; i < editor_colors::kSchemeCount; ++i) {
+                editor_colors::Save(file, i);
+                IM_CHECK_EQ(editor_colors::Load(file), i);
+            }
+            std::ofstream(file) << "unknown-scheme\n";
+            IM_CHECK_EQ(editor_colors::Load(file), 0);
+        };
+    }
     {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "recent_files_persistence");
         t->UserData = app;
@@ -710,6 +726,29 @@ Vibe Coding 人手一套定制化工具 :ok:
 #endif
             a.showSettings = true;
             ctx->Yield(3);
+            ctx->SetRef("Settings##modal");
+            std::string before = a.editor.GetText();
+            int originalScheme = a.editorColorSchemeIndex;
+            a.editor.SetSelection({0, 0}, {0, 2});
+            std::string selection = a.editor.GetSelectedText();
+            auto cursor = a.editor.GetCursorPosition();
+            int uiTheme = themes::GetCurrentThemeIndex();
+            for (int i = 0; i < editor_colors::kSchemeCount; ++i) {
+                ctx->ItemClick("##editorcolors");
+                std::string item = std::string("//##Combo_00/") + editor_colors::kSchemes[i].name;
+                ctx->ItemClick(item.c_str());
+                IM_CHECK_EQ(a.editorColorSchemeIndex, i);
+                IM_CHECK(a.editor.GetPalette() == editor_colors::kSchemes[i].palette());
+                IM_CHECK_EQ(editor_colors::Load(a.editorColorSchemePath), i);
+                IM_CHECK(a.editor.GetText() == before);
+                IM_CHECK(a.editor.GetSelectedText() == selection);
+                IM_CHECK(a.editor.GetCursorPosition() == cursor);
+                IM_CHECK_EQ(themes::GetCurrentThemeIndex(), uiTheme);
+            }
+            a.editorColorSchemeIndex = originalScheme;
+            a.editor.SetPalette(editor_colors::kSchemes[originalScheme].palette());
+            editor_colors::Save(a.editorColorSchemePath, originalScheme);
+            a.editor.SetSelection({0, 0}, {0, 0});
             Capture(ctx, a, "settings.bmp");
             ctx->KeyPress(ImGuiKey_Escape);
             ctx->Yield(3);
