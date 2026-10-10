@@ -835,7 +835,8 @@ int main(int argc, char *argv[]) {
                 if (ImGui::BeginMenu("Open Recent")) {
                     fs::path selected;
                     const auto &recent = app.recentFiles.Paths();
-                    if (recent.empty()) ImGui::TextDisabled("No recent files");
+                    if (recent.empty()) ImGui::TextDisabled(app.recentFiles.IsEnabled()
+                        ? "No recent files" : "Recent file history is disabled");
                     for (int i = 0; i < (int)recent.size(); ++i) {
                         std::string label = recent[i].filename().string() + "###recent-file-" + std::to_string(i);
                         if (ImGui::MenuItem(label.c_str())) selected = recent[i];
@@ -968,6 +969,11 @@ int main(int argc, char *argv[]) {
             if (ImGui::Checkbox("Use spaces for tabs", &insertSpaces))
                 app.editor.SetInsertSpaces(insertSpaces);
             ImGui::Checkbox("Autosave", &app.autosave);
+            bool saveRecentFiles = app.recentFiles.IsEnabled();
+            if (ImGui::Checkbox("Save recent file list", &saveRecentFiles))
+                app.recentFiles.SetEnabled(saveRecentFiles);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Disabling this clears the saved list and stops recording recently opened files.");
             if (ImGui::Checkbox("Log to file", &app.logToFile)) {
                 if (app.logToFile) {
                     mg::Log::Instance().SetFileOutput(

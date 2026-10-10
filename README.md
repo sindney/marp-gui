@@ -33,6 +33,8 @@ File → Export produces PDF, PPTX, or HTML beside the deck.
 
 File → Open Recent and the command palette show the five most recently
 opened decks. The list persists across restarts; **Clear Recent** clears it.
+Turn off **Settings → Save recent file list** to clear the list and stop
+recording file history. This preference persists across restarts.
 Hold **Up** or **Down** in the command palette to move through results.
 
 **Tab** inserts spaces to the next four-column tab stop by default. Disable
