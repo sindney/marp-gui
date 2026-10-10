@@ -42,6 +42,34 @@ struct DeckSwitchVars { fs::path pendingPath; };
 
 void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
     {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "recent_files_persistence");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            fs::path dir = a.runtimeDir / "recent files";
+            fs::create_directories(dir);
+            RecentFiles recent;
+            recent.Load(dir / "history.txt");
+            for (int i = 0; i < 7; ++i) {
+                fs::path path = dir / ("测试 deck " + std::to_string(i) + ".md");
+                std::ofstream(path) << "# Recent\n";
+                recent.Remember(path);
+            }
+            IM_CHECK_EQ(recent.Paths().size(), (size_t)5);
+            IM_CHECK(recent.Paths().front().filename() == fs::path("测试 deck 6.md"));
+            fs::path reopen = recent.Paths()[3];
+            recent.Remember(reopen.parent_path() / "." / reopen.filename());
+            IM_CHECK_EQ(recent.Paths().size(), (size_t)5);
+            IM_CHECK(recent.Paths().front() == reopen);
+            RecentFiles restored;
+            restored.Load(dir / "history.txt");
+            IM_CHECK(restored.Paths() == recent.Paths());
+            restored.Clear();
+            recent.Load(dir / "history.txt");
+            IM_CHECK(recent.Paths().empty());
+        };
+    }
+    {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "markdown_emoji_tokens");
         t->TestFunc = [](ImGuiTestContext *ctx) {
             auto tokenize = markdown_lang::Markdown().mTokenize;
@@ -687,6 +715,86 @@ Vibe Coding 人手一套定制化工具 :ok:
                 if (std::string(format) == "pdf") IM_CHECK(std::string(header, 4) == "%PDF");
                 if (std::string(format) == "pptx") IM_CHECK(std::string(header, 2) == "PK");
             }
+        };
+    }
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "recent_files_menu_and_palette");
+        t->UserData = app;
+        t->SetVarsDataType<DeckSwitchVars>();
+        t->GuiFunc = [](ImGuiTestContext *ctx) {
+            auto &vars = ctx->GetVars<DeckSwitchVars>();
+            if (!vars.pendingPath.empty()) {
+                OpenDeck(*(App *)ctx->Test->UserData, vars.pendingPath);
+                vars.pendingPath.clear();
+            }
+        };
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            auto &vars = ctx->GetVars<DeckSwitchVars>();
+            fs::path original = a.deckPath;
+            RecentFiles originalRecent = a.recentFiles;
+            bool autosave = a.autosave;
+            a.autosave = false;
+            a.recentFiles.Clear();
+            for (int i = 0; i < 6; ++i) {
+                fs::path path = a.runtimeDir / ("recent-" + std::to_string(i) + ".md");
+                std::ofstream(path) << "---\nmarp: true\n---\n# Recent " << i << '\n';
+                a.recentFiles.Remember(path);
+            }
+            IM_CHECK_EQ(a.recentFiles.Paths().size(), (size_t)5);
+            ctx->MenuClick("//##MainMenuBar/File/Open Recent/recent-2.md###recent-file-3");
+            ctx->Yield(3);
+            IM_CHECK(a.deckPath.filename() == fs::path("recent-2.md"));
+            IM_CHECK(a.editor.GetText().find("# Recent 2") != std::string::npos);
+            IM_CHECK(!a.editor.HasSelection());
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(0, 0));
+            IM_CHECK(a.recentFiles.Paths().front() == a.deckPath);
+            ctx->MenuClick("//##MainMenuBar/File/Open Recent/Clear Recent");
+            IM_CHECK(a.recentFiles.Paths().empty());
+            for (int i = 0; i < 5; ++i)
+                a.recentFiles.Remember(a.runtimeDir / ("recent-" + std::to_string(i) + ".md"));
+
+            ImGuiIO &io = ImGui::GetIO();
+            float delay = io.KeyRepeatDelay, rate = io.KeyRepeatRate;
+            io.KeyRepeatDelay = io.KeyRepeatRate = 0.15f;
+            for (ImGuiKey key : {ImGuiKey_DownArrow, ImGuiKey_UpArrow}) {
+                auto paths = a.recentFiles.Paths();
+                a.showPalette = true;
+                ctx->Yield(3);
+                ctx->SetRef("Command Palette");
+                ctx->ItemClick("##palette_filter");
+                ctx->KeyChars("Open Recent:");
+                ctx->KeyDown(key);
+                ctx->SleepNoSkip(0.28f, 0.01f);
+                ctx->KeyUp(key);
+                ctx->KeyPress(ImGuiKey_Enter);
+                ctx->Yield(3);
+                IM_CHECK(!a.showPalette);
+                IM_CHECK(a.deckPath != paths[key == ImGuiKey_DownArrow ? 1 : 4]);
+                IM_CHECK(a.recentFiles.Paths().front() == a.deckPath);
+                IM_CHECK(a.editor.GetText().find("# Recent ") != std::string::npos);
+                IM_CHECK(!a.editor.HasSelection());
+                IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(0, 0));
+            }
+            io.KeyRepeatDelay = delay;
+            io.KeyRepeatRate = rate;
+            a.showPalette = true;
+            ctx->Yield(3);
+            ctx->ItemClick("##palette_filter");
+            ctx->KeyChars("Clear Recent");
+            ctx->KeyPress(ImGuiKey_Enter);
+            IM_CHECK(a.recentFiles.Paths().empty());
+            fs::path activePath = a.deckPath;
+            std::string activeText = a.editor.GetText();
+            IM_CHECK(!OpenDeck(a, a.runtimeDir / "missing.md"));
+            IM_CHECK(a.deckPath == activePath);
+            IM_CHECK(a.editor.GetText() == activeText);
+            IM_CHECK(a.recentFiles.Paths().empty());
+            vars.pendingPath = original;
+            ctx->Yield(3);
+            a.recentFiles = originalRecent;
+            a.recentFiles.Remember(original);
+            a.autosave = autosave;
         };
     }
 }

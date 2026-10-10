@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <filesystem>
+
 struct App;
 
 namespace palette {
@@ -14,6 +16,8 @@ namespace palette {
 enum class Command {
     None,
     Open,
+    OpenRecent,
+    ClearRecent,
     Save,
     SaveAs,
     ExportPdf,
@@ -28,8 +32,12 @@ enum class Command {
     PrevSlide,
 };
 
-// Render the palette when *openFlag is true. Returns the command chosen this
-// frame (Command::None otherwise); flips *openFlag off on Esc/Enter/select.
-Command Render(bool &openFlag, App &app);
+struct Action {
+    Command command = Command::None;
+    std::filesystem::path path;
+};
+
+// Render the palette and return the selected action.
+Action Render(bool &openFlag, App &app);
 
 } // namespace palette

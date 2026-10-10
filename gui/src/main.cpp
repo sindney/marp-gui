@@ -327,6 +327,7 @@ void LoadDeck(App &app) {
     app.dirtySinceLastSave = false;
     std::error_code ec;
     app.lastWriteTime = fs::last_write_time(app.deckPath, ec);
+    if (fs::is_regular_file(app.deckPath, ec)) app.recentFiles.Remember(app.deckPath);
 }
 
 // Point everything at a (possibly new) deck + theme and force a fresh build.
@@ -334,6 +335,8 @@ void LoadDeck(App &app) {
 void SwitchDeck(App &app) {
     ++app.buildGeneration;
     LoadDeck(app);
+    app.editor.SetSelection({0, 0}, {0, 0});
+    app.editor.SetCursorPosition({0, 0});
     app.cursorSlide = 0;
     app.viewSlide = 0;
     app.lastCursorLine = -1;
@@ -341,6 +344,19 @@ void SwitchDeck(App &app) {
     LOGI << "switched deck to " << app.deckPath.string();
     if (app.worker)
         app.worker->Retarget(app.deckPath.string(), app.themePath.string());
+}
+
+bool OpenDeck(App &app, const fs::path &path) {
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec) || !std::ifstream(path, std::ios::binary)) {
+        app.status = "open failed";
+        app.lastError = "Cannot open deck: " + path.string();
+        LOGE << app.lastError;
+        return false;
+    }
+    app.deckPath = fs::absolute(path);
+    SwitchDeck(app);
+    return true;
 }
 
 // Unified slide navigation — see app.h. Sets viewSlide (clamped) and asks the
@@ -504,6 +520,7 @@ int main(int argc, char *argv[]) {
         mg::WriteBuiltinResources(root);
     }
     app.repoRoot = root;
+    app.recentFiles.Load((testDeck ? app.runtimeDir : userDir) / "recent-files.txt");
     mg::ConfigureMarpEnvironment(root);
     app.deckPath = fs::absolute(deckArg.empty() ? "slides.md" : deckArg);
     if (testDeck) {
@@ -812,9 +829,22 @@ int main(int argc, char *argv[]) {
                 if (ImGui::MenuItem("Open...", (io.ConfigMacOSXBehaviors ? "Cmd+O" : "Ctrl+O"))) {
                     std::string path;
                     if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path)) {
-                        app.deckPath = fs::absolute(path);
-                        SwitchDeck(app);
+                        OpenDeck(app, path);
                     }
+                }
+                if (ImGui::BeginMenu("Open Recent")) {
+                    fs::path selected;
+                    const auto &recent = app.recentFiles.Paths();
+                    if (recent.empty()) ImGui::TextDisabled("No recent files");
+                    for (int i = 0; i < (int)recent.size(); ++i) {
+                        std::string label = recent[i].filename().string() + "###recent-file-" + std::to_string(i);
+                        if (ImGui::MenuItem(label.c_str())) selected = recent[i];
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", recent[i].string().c_str());
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Clear Recent", nullptr, false, !recent.empty())) app.recentFiles.Clear();
+                    ImGui::EndMenu();
+                    if (!selected.empty()) OpenDeck(app, selected);
                 }
                 if (ImGui::MenuItem("Save", (io.ConfigMacOSXBehaviors ? "Cmd+S" : "Ctrl+S"))) SaveDeck(app);
                 if (ImGui::MenuItem("Save As...")) {
@@ -857,16 +887,17 @@ int main(int argc, char *argv[]) {
 
         // --- Command palette dispatch (same code paths as the menus) ----------------
         {
-            palette::Command cmd = palette::Render(app.showPalette, app);
-            switch (cmd) {
+            palette::Action action = palette::Render(app.showPalette, app);
+            switch (action.command) {
             case palette::Command::Open: {
                 std::string path;
                 if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path)) {
-                    app.deckPath = fs::absolute(path);
-                    SwitchDeck(app);
+                    OpenDeck(app, path);
                 }
                 break;
             }
+            case palette::Command::OpenRecent: OpenDeck(app, action.path); break;
+            case palette::Command::ClearRecent: app.recentFiles.Clear(); break;
             case palette::Command::Save: SaveDeck(app); break;
             case palette::Command::SaveAs: {
                 std::string path;
@@ -1221,8 +1252,7 @@ int main(int argc, char *argv[]) {
             if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
                 std::string path;
                 if (OpenFileDialog(app.deckPath.parent_path().string().c_str(), path)) {
-                    app.deckPath = fs::absolute(path);
-                    SwitchDeck(app);
+                    OpenDeck(app, path);
                 }
             }
         }

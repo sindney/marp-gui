@@ -9,14 +9,16 @@
 #include <vector>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 
 namespace palette {
 
 namespace {
 
 struct Entry {
-    const char *display;
+    std::string display;
     Command cmd;
+    std::filesystem::path path;
 };
 
 char filterBuf[256] = "";
@@ -36,8 +38,8 @@ bool icontains(const std::string &hay, const std::string &needle) {
 
 } // namespace
 
-Command Render(bool &openFlag, App &app) {
-    Command result = Command::None;
+Action Render(bool &openFlag, App &app) {
+    Action result;
     if (!openFlag) return result;
 
     ImGuiViewport *vp = ImGui::GetMainViewport();
@@ -58,6 +60,7 @@ Command Render(bool &openFlag, App &app) {
         filterBuf[0] = '\0';
         lastFilter.clear();
         selectedIndex = 0;
+        scrollToSelection = false;
         ImGui::SetKeyboardFocusHere();
     }
     ImGui::InputTextWithHint("##palette_filter", "Type to filter commands...",
@@ -79,6 +82,10 @@ Command Render(bool &openFlag, App &app) {
         {"About",              Command::About},
         {"Exit",               Command::Exit},
     };
+    for (const auto &path : app.recentFiles.Paths())
+        all.push_back({"Open Recent: " + path.filename().string() + " - " + path.parent_path().string(),
+                       Command::OpenRecent, path});
+    if (!app.recentFiles.Paths().empty()) all.push_back({"Clear Recent", Command::ClearRecent});
 
     const std::string filterStr(filterBuf);
     std::vector<const Entry *> filtered;
@@ -92,17 +99,18 @@ Command Render(bool &openFlag, App &app) {
 
     if (!filtered.empty()) {
         bool moved = false;
-        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, false)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
             selectedIndex = (selectedIndex + 1) % (int)filtered.size();
             moved = true;
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false)) {
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
             selectedIndex = (selectedIndex - 1 + (int)filtered.size()) % (int)filtered.size();
             moved = true;
         }
         if (moved) scrollToSelection = true; // follow keyboard nav
         if (ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
-            result = filtered[selectedIndex]->cmd;
+            result = {filtered[selectedIndex]->cmd, filtered[selectedIndex]->path};
+            ImGui::SetKeyOwner(ImGuiKey_Enter, ImGui::GetCurrentWindow()->ID, ImGuiInputFlags_LockUntilRelease);
             openFlag = false;
         }
     }
@@ -116,10 +124,12 @@ Command Render(bool &openFlag, App &app) {
     } else {
         for (int i = 0; i < (int)filtered.size(); ++i) {
             bool sel = (i == selectedIndex);
-            if (ImGui::Selectable(filtered[i]->display, sel)) {
-                result = filtered[i]->cmd;
+            ImGui::PushID(i);
+            if (ImGui::Selectable(filtered[i]->display.c_str(), sel)) {
+                result = {filtered[i]->cmd, filtered[i]->path};
                 openFlag = false;
             }
+            ImGui::PopID();
             if (sel) {
                 ImGui::SetItemDefaultFocus();
                 // follow keyboard navigation so the row scrolls into view

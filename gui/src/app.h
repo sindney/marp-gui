@@ -4,6 +4,7 @@
 #pragma once
 
 #include "TextEditor.h"
+#include "recent_files.h"
 
 #include <chrono>
 #include <filesystem>
@@ -20,6 +21,7 @@ struct SlideTexture;
 struct App {
     TextEditor editor;
     fs::path deckPath;
+    RecentFiles recentFiles;
     fs::path themePath;                       // currently selected marp theme css
     fs::path repoRoot;                        // immutable resources (bundle or repo)
     fs::path runtimeDir;                      // writable, per-instance work directory
@@ -67,6 +69,7 @@ int SlideForLine(const std::vector<int> &starts, int line);
 // Deck lifecycle (defined in main.cpp).
 void LoadDeck(App &app);
 void SwitchDeck(App &app);
+bool OpenDeck(App &app, const fs::path &path);
 void ExportDeck(App &app, const std::string &format);
 bool PreviewReady(const App &app);
 

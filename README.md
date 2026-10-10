@@ -31,6 +31,10 @@ Use **Cmd** on macOS or **Ctrl** on Windows: **S** saves, **O** opens,
 **P** opens commands, **Z** undoes, and **Shift+Z** redoes.
 File → Export produces PDF, PPTX, or HTML beside the deck.
 
+File → Open Recent and the command palette show the five most recently
+opened decks. The list persists across restarts; **Clear Recent** clears it.
+Hold **Up** or **Down** in the command palette to move through results.
+
 **Tab** inserts spaces to the next four-column tab stop by default. Disable
 **Settings → Use spaces for tabs** to insert literal tabs. **Shift+Tab**
 unindents the current line or selected lines; **Shift+Backspace** and
