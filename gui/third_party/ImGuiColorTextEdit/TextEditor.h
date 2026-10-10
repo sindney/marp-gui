@@ -238,6 +238,10 @@ public:
 
 	void SetTabSize(int aValue);
 	inline int GetTabSize() const { return mTabSize; }
+	void SetInsertSpaces(bool value) { mInsertSpaces = value; }
+	bool IsInsertSpaces() const { return mInsertSpaces; }
+	void SetImeComposing(bool value) { mImeComposing = value; }
+	bool IsImeComposing() const { return mImeComposing; }
 
 	void InsertText(const std::string& aValue);
 	void InsertText(const char* aValue);
@@ -345,7 +349,7 @@ private:
 	void RemoveLine(int aIndex);
 	Line& InsertLine(int aIndex);
 	void EnterCharacter(ImWchar aChar, bool aShift);
-	void Backspace();
+	void Backspace(bool aWordMode = false);
 	void DeleteSelection();
 	std::string GetWordUnderCursor() const;
 	std::string GetWordAt(const Coordinates& aCoords) const;
@@ -362,6 +366,8 @@ private:
 	int mUndoIndex;
 
 	int mTabSize;
+	bool mInsertSpaces = true;
+	bool mImeComposing = false;
 	bool mOverwrite;
 	bool mReadOnly;
 	bool mWithinRender;
@@ -371,7 +377,7 @@ private:
 	bool mColorizerEnabled;
 	float mTextStart;                   // position (in pixels) where a code line starts relative to the left of the TextEditor.
 	int  mLeftMargin;
-	ImVec2 mCaretScreenPos = ImVec2(0, 0); // marp-gui: last drawn caret top-left (screen space)
+	ImVec2 mCaretScreenPos = ImVec2(0, 0);
 	bool mCursorPositionChanged;
 	int mColorRangeMin, mColorRangeMax;
 	SelectionMode mSelectionMode;

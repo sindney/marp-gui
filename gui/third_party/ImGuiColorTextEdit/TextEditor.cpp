@@ -3,6 +3,7 @@
 #include <string>
 #include <regex>
 #include <cmath>
+#include <cctype>
 
 #include "TextEditor.h"
 
@@ -711,58 +712,61 @@ void TextEditor::HandleKeyboardInputs()
 		io.WantCaptureKeyboard = true;
 		io.WantTextInput = true;
 
-		if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Z))
-			Undo();
-		else if (!IsReadOnly() && !ctrl && !shift && alt && ImGui::IsKeyPressed(ImGuiKey_Backspace))
-			Undo();
-		else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Y))
-			Redo();
-		else if (!IsReadOnly() && ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Z))
-			Redo();
-		else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-			MoveUp(1, shift);
-		else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-			MoveDown(1, shift);
-		else if (!alt && ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
-			MoveLeft(1, shift, ctrl);
-		else if (!alt && ImGui::IsKeyPressed(ImGuiKey_RightArrow))
-			MoveRight(1, shift, ctrl);
-		else if (!alt && ImGui::IsKeyPressed(ImGuiKey_PageUp))
-			MoveUp(GetPageSize() - 4, shift);
-		else if (!alt && ImGui::IsKeyPressed(ImGuiKey_PageDown))
-			MoveDown(GetPageSize() - 4, shift);
-		else if (!alt && ctrl && ImGui::IsKeyPressed(ImGuiKey_Home))
-			MoveTop(shift);
-		else if (ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_End))
-			MoveBottom(shift);
-		else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_Home))
-			MoveHome(shift);
-		else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_End))
-			MoveEnd(shift);
-		else if (!IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Delete))
-			Delete();
-		else if (!IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Backspace))
-			Backspace();
-		else if (!ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
-			mOverwrite ^= true;
-		else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
-			Copy();
-		else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_C))
-			Copy();
-		else if (!IsReadOnly() && !ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
-			Paste();
-		else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_V))
-			Paste();
-		else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_X))
-			Cut();
-		else if (!ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Delete))
-			Cut();
-		else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_A))
-			SelectAll();
-		else if (!IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Enter))
-			EnterCharacter('\n', false);
-		else if (!IsReadOnly() && !ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_Tab))
-			EnterCharacter('\t', shift);
+		if (!mImeComposing)
+		{
+			if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Z))
+				Undo();
+			else if (!IsReadOnly() && !ctrl && !shift && alt && ImGui::IsKeyPressed(ImGuiKey_Backspace))
+				Undo();
+			else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Y))
+				Redo();
+			else if (!IsReadOnly() && ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Z))
+				Redo();
+			else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+				MoveUp(1, shift);
+			else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+				MoveDown(1, shift);
+			else if (!alt && ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
+				MoveLeft(1, shift, ctrl);
+			else if (!alt && ImGui::IsKeyPressed(ImGuiKey_RightArrow))
+				MoveRight(1, shift, ctrl);
+			else if (!alt && ImGui::IsKeyPressed(ImGuiKey_PageUp))
+				MoveUp(GetPageSize() - 4, shift);
+			else if (!alt && ImGui::IsKeyPressed(ImGuiKey_PageDown))
+				MoveDown(GetPageSize() - 4, shift);
+			else if (!alt && ctrl && ImGui::IsKeyPressed(ImGuiKey_Home))
+				MoveTop(shift);
+			else if (ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_End))
+				MoveBottom(shift);
+			else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_Home))
+				MoveHome(shift);
+			else if (!ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_End))
+				MoveEnd(shift);
+			else if (!IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Delete))
+				Delete();
+			else if (!IsReadOnly() && !alt && ImGui::IsKeyPressed(ImGuiKey_Backspace))
+				Backspace(ctrl || shift);
+			else if (!ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
+				mOverwrite ^= true;
+			else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
+				Copy();
+			else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_C))
+				Copy();
+			else if (!IsReadOnly() && !ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Insert))
+				Paste();
+			else if (!IsReadOnly() && ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_V))
+				Paste();
+			else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_X))
+				Cut();
+			else if (!ctrl && shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Delete))
+				Cut();
+			else if (ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_A))
+				SelectAll();
+			else if (!IsReadOnly() && !ctrl && !shift && !alt && ImGui::IsKeyPressed(ImGuiKey_Enter))
+				EnterCharacter('\n', false);
+			else if (!IsReadOnly() && !ctrl && !alt && ImGui::IsKeyPressed(ImGuiKey_Tab))
+				EnterCharacter('\t', shift);
+		}
 
 		if (!IsReadOnly() && !io.InputQueueCharacters.empty())
 		{
@@ -784,7 +788,7 @@ void TextEditor::HandleMouseInputs()
 	auto ctrl = io.KeyCtrl;
 	auto alt = io.KeyAlt;
 
-	if (ImGui::IsWindowHovered())
+	if (ImGui::IsItemActive() || (ImGui::IsWindowHovered() && !ImGui::IsAnyItemActive()))
 	{
 		if (!shift && !alt)
 		{
@@ -978,13 +982,15 @@ void TextEditor::Render()
 				// Render the cursor
 				if (focused)
 				{
+					float cx = TextDistanceToLineStart(mState.mCursorPosition);
+					mCaretScreenPos = ImVec2(textScreenPos.x + cx, lineStartScreenPos.y);
 					auto timeEnd = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+					if (mCursorPositionChanged || mTextChanged) mStartTime = timeEnd - 401;
 					auto elapsed = timeEnd - mStartTime;
 					if (elapsed > 400)
 					{
 						float width = 1.0f;
 						auto cindex = GetCharacterIndex(mState.mCursorPosition);
-						float cx = TextDistanceToLineStart(mState.mCursorPosition);
 
 						if (mOverwrite && cindex < (int)line.size())
 						{
@@ -1005,7 +1011,6 @@ void TextEditor::Render()
 						ImVec2 cstart(textScreenPos.x + cx, lineStartScreenPos.y);
 						ImVec2 cend(textScreenPos.x + cx + width, lineStartScreenPos.y + mCharAdvance.y);
 						drawList->AddRectFilled(cstart, cend, mPalette[(int)PaletteIndex::Cursor]);
-						mCaretScreenPos = cstart; // marp-gui: expose caret for IME anchoring
 						if (elapsed > 800)
 							mStartTime = timeEnd;
 					}
@@ -1116,7 +1121,6 @@ void TextEditor::Render()
 	if (mScrollToCursor)
 	{
 		EnsureCursorVisible();
-		ImGui::SetWindowFocus();
 		mScrollToCursor = false;
 	}
 }
@@ -1130,16 +1134,22 @@ void TextEditor::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(mPalette[(int)PaletteIndex::Background]));
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 	if (!mIgnoreImGuiChild)
-		ImGui::BeginChild(aTitle, aSize, aBorder, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_AlwaysHorizontalScrollbar | ImGuiWindowFlags_NoMove);
+		ImGui::BeginChild(aTitle, aSize, aBorder, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_AlwaysHorizontalScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNavInputs);
 
 	if (mHandleKeyboardInputs)
 	{
 		HandleKeyboardInputs();
-		ImGui::PushItemFlag(ImGuiItemFlags_NoTabStop, false);
+		ImGui::PushItemFlag(ImGuiItemFlags_NoTabStop, true);
 	}
 
 	if (mHandleMouseInputs)
+	{
+		ImVec2 cursor = ImGui::GetCursorPos();
+		ImVec2 size = ImGui::GetContentRegionAvail();
+		ImGui::InvisibleButton("##text-input", ImVec2(std::max(size.x, 1.0f), std::max(size.y, 1.0f)));
+		ImGui::SetCursorPos(cursor);
 		HandleMouseInputs();
+	}
 
 	ColorizeInternal();
 	Render();
@@ -1222,9 +1232,32 @@ void TextEditor::EnterCharacter(ImWchar aChar, bool aShift)
 
 	u.mBefore = mState;
 
+	if (aChar == '\t' && aShift && !HasSelection())
+	{
+		auto pos = GetActualCursorCoordinates();
+		auto& line = mLines[pos.mLine];
+		int count = 0;
+		if (!line.empty() && line.front().mChar == '\t') count = 1;
+		else while (count < mTabSize && count < (int)line.size() && line[count].mChar == ' ') ++count;
+		if (count == 0) return;
+		int columns = GetCharacterColumn(pos.mLine, count);
+		u.mRemovedStart = Coordinates(pos.mLine, 0);
+		u.mRemovedEnd = Coordinates(pos.mLine, columns);
+		u.mRemoved = GetText(u.mRemovedStart, u.mRemovedEnd);
+		line.erase(line.begin(), line.begin() + count);
+		SetCursorPosition(Coordinates(pos.mLine, std::max(0, pos.mColumn - columns)));
+		SetSelection(mState.mCursorPosition, mState.mCursorPosition);
+		mTextChanged = true;
+		u.mAfter = mState;
+		AddUndo(u);
+		Colorize(pos.mLine, 1);
+		EnsureCursorVisible();
+		return;
+	}
+
 	if (HasSelection())
 	{
-		if (aChar == '\t' && mState.mSelectionStart.mLine != mState.mSelectionEnd.mLine)
+		if (aChar == '\t' && (aShift || mState.mSelectionStart.mLine != mState.mSelectionEnd.mLine))
 		{
 
 			auto start = mState.mSelectionStart;
@@ -1234,15 +1267,11 @@ void TextEditor::EnterCharacter(ImWchar aChar, bool aShift)
 			if (start > end)
 				std::swap(start, end);
 			start.mColumn = 0;
-			//			end.mColumn = end.mLine < mLines.size() ? mLines[end.mLine].size() : 0;
 			if (end.mColumn == 0 && end.mLine > 0)
 				--end.mLine;
 			if (end.mLine >= (int)mLines.size())
 				end.mLine = mLines.empty() ? 0 : (int)mLines.size() - 1;
 			end.mColumn = GetLineMaxColumn(end.mLine);
-
-			//if (end.mColumn >= GetLineMaxColumn(end.mLine))
-			//	end.mColumn = GetLineMaxColumn(end.mLine) - 1;
 
 			u.mRemovedStart = start;
 			u.mRemovedEnd = end;
@@ -1274,7 +1303,8 @@ void TextEditor::EnterCharacter(ImWchar aChar, bool aShift)
 				}
 				else
 				{
-					line.insert(line.begin(), Glyph('\t', TextEditor::PaletteIndex::Background));
+					if (mInsertSpaces) line.insert(line.begin(), mTabSize, Glyph(' ', PaletteIndex::Default));
+					else line.insert(line.begin(), Glyph('\t', PaletteIndex::Default));
 					modified = true;
 				}
 			}
@@ -1298,10 +1328,12 @@ void TextEditor::EnterCharacter(ImWchar aChar, bool aShift)
 
 				u.mAddedStart = start;
 				u.mAddedEnd = rangeEnd;
-				u.mAfter = mState;
-
 				mState.mSelectionStart = start;
 				mState.mSelectionEnd = end;
+				mState.mCursorPosition = end;
+				mInteractiveStart = start;
+				mInteractiveEnd = end;
+				u.mAfter = mState;
 				AddUndo(u);
 
 				mTextChanged = true;
@@ -1341,6 +1373,12 @@ void TextEditor::EnterCharacter(ImWchar aChar, bool aShift)
 		line.erase(line.begin() + cindex, line.begin() + line.size());
 		SetCursorPosition(Coordinates(coord.mLine + 1, GetCharacterColumn(coord.mLine + 1, (int)whitespaceSize)));
 		u.mAdded = (char)aChar;
+	}
+	else if (aChar == '\t' && mInsertSpaces)
+	{
+		u.mAdded = std::string(mTabSize - coord.mColumn % mTabSize, ' ');
+		InsertTextAt(coord, u.mAdded.c_str());
+		SetCursorPosition(coord);
 	}
 	else
 	{
@@ -1461,7 +1499,7 @@ void TextEditor::SetSelection(const Coordinates & aStart, const Coordinates & aE
 
 void TextEditor::SetTabSize(int aValue)
 {
-	mTabSize = std::max(0, std::min(32, aValue));
+	mTabSize = std::max(1, std::min(32, aValue));
 }
 
 void TextEditor::InsertText(const std::string & aValue)
@@ -1816,7 +1854,7 @@ void TextEditor::Delete()
 	AddUndo(u);
 }
 
-void TextEditor::Backspace()
+void TextEditor::Backspace(bool aWordMode)
 {
 	assert(!mReadOnly);
 
@@ -1839,7 +1877,28 @@ void TextEditor::Backspace()
 		auto pos = GetActualCursorCoordinates();
 		SetCursorPosition(pos);
 
-		if (mState.mCursorPosition.mColumn == 0)
+		if (aWordMode && pos.mColumn > 0)
+		{
+			auto& line = mLines[pos.mLine];
+			int end = GetCharacterIndex(pos), start = end;
+			auto category = [](unsigned char c) {
+				if (c == ' ' || c == '\t') return 0;
+				return c >= 0x80 || std::isalnum(c) || c == '_' ? 1 : 2;
+			};
+			while (start > 0 && category(line[start - 1].mChar) == 0) --start;
+			if (start > 0)
+			{
+				int kind = category(line[start - 1].mChar);
+				while (start > 0 && category(line[start - 1].mChar) == kind) --start;
+			}
+			u.mRemovedStart = Coordinates(pos.mLine, GetCharacterColumn(pos.mLine, start));
+			u.mRemovedEnd = pos;
+			u.mRemoved = GetText(u.mRemovedStart, pos);
+			line.erase(line.begin() + start, line.begin() + end);
+			SetCursorPosition(u.mRemovedStart);
+			SetSelection(u.mRemovedStart, u.mRemovedStart);
+		}
+		else if (mState.mCursorPosition.mColumn == 0)
 		{
 			if (mState.mCursorPosition.mLine == 0)
 				return;
@@ -2055,7 +2114,7 @@ const TextEditor::Palette & TextEditor::GetProgrammerPalette()
 			0xff6a9955, // Comment (multi)
 			0xff1e1e1e, // Background		(#1e1e1e)
 			0xffe0e0e0, // Cursor
-			0x804b82b8, // Selection		(soft blue)
+			0xff784f26, // Selection
 			0x800020ff, // ErrorMarker
 			0x40f08000, // Breakpoint
 			0xff858585, // Line number		(#858585 dim)

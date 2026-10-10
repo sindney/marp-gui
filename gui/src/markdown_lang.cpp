@@ -98,11 +98,21 @@ static bool Tokenize(const char *in_begin, const char *in_end,
         return true;
     }
 
+    if (*p == ':') {
+        const char *q = p + 1;
+        while (q < in_end && (IsIdentChar(*q) || *q == '-' || *q == '+')) ++q;
+        if (q > p + 1 && q < in_end && *q == ':') {
+            out_begin = p; out_end = q + 1;
+            paletteIndex = PaletteIndex::Default;
+            return true;
+        }
+    }
+
     // --- YAML-ish key: value at line start (front matter, directives) -----------
     if (IsIdentChar(*p)) {
         const char *q = p;
         while (q < in_end && IsIdentChar(*q)) ++q;
-        if (q < in_end && *q == ':') {
+        if (q < in_end && *q == ':' && (q + 1 == in_end || isspace((unsigned char)q[1]))) {
             out_begin = p; out_end = q + 1;
             paletteIndex = PaletteIndex::KnownIdentifier;
             return true;

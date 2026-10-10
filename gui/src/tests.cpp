@@ -7,6 +7,7 @@
 #include "platform.h"
 #include "themes.h"
 #include "markdown_lang.h"
+#include "input_state.h"
 
 #include <fstream>
 #include <chrono>
@@ -40,6 +41,238 @@ static void Capture(ImGuiTestContext *ctx, App &app, const char *name) {
 struct DeckSwitchVars { fs::path pendingPath; };
 
 void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "markdown_emoji_tokens");
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            auto tokenize = markdown_lang::Markdown().mTokenize;
+            const char *begin = nullptr, *end = nullptr;
+            auto color = TextEditor::PaletteIndex::Default;
+            for (const char *text : {":smile:", ":+1:", ":woman-technologist:"}) {
+                IM_CHECK(tokenize(text, text + strlen(text), begin, end, color));
+                IM_CHECK(begin == text && end == text + strlen(text));
+                IM_CHECK(color == TextEditor::PaletteIndex::Default);
+            }
+            for (const char *text : {"marp: true", "theme:\tprogrammer", "key:"}) {
+                IM_CHECK(tokenize(text, text + strlen(text), begin, end, color));
+                IM_CHECK(color == TextEditor::PaletteIndex::KnownIdentifier);
+            }
+            const char *text = "https://example.com";
+            IM_CHECK(tokenize(text, text + strlen(text), begin, end, color));
+            IM_CHECK(color == TextEditor::PaletteIndex::Default);
+        };
+    }
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_mouse_selection");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            std::string before = a.editor.GetText();
+            bool autosave = a.autosave;
+            a.autosave = false;
+            ImGuiWindow *window = nullptr;
+            for (ImGuiWindow *w : ImGui::GetCurrentContext()->Windows)
+                if (strstr(w->Name, "/editor_")) window = w;
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            a.editor.SetText("selection visible\nsecond line");
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.SetSelection({0, 0}, {0, 0});
+            ctx->Yield(3);
+            ImVec2 start = a.editor.GetCaretScreenPos();
+            float width = ImGui::GetIO().Fonts->Fonts[0]->CalcTextSizeA(
+                a.editor.GetCaretHeight(), FLT_MAX, -1.0f, "selection").x;
+            ctx->MouseMoveToPos(ImVec2(start.x + 1.0f, start.y + 3.0f));
+            ctx->MouseDown();
+            ctx->MouseMoveToPos(ImVec2(start.x + width, start.y + 3.0f));
+            ctx->MouseUp();
+            ctx->Yield(2);
+            IM_CHECK(a.editor.HasSelection());
+            std::string selected = a.editor.GetSelectedText();
+            IM_CHECK(selected == "selection");
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_C);
+            IM_CHECK(std::string(ImGui::GetClipboardText()) == selected);
+            ImU32 color = TextEditor::GetProgrammerPalette()[(int)TextEditor::PaletteIndex::Selection];
+            int vertices = 0;
+            ImVec2 boundsMin(FLT_MAX, FLT_MAX), boundsMax(-FLT_MAX, -FLT_MAX);
+            for (const auto& vertex : window->DrawList->VtxBuffer) {
+                if (vertex.col != color) continue;
+                ++vertices;
+                boundsMin = ImMin(boundsMin, vertex.pos);
+                boundsMax = ImMax(boundsMax, vertex.pos);
+            }
+            IM_CHECK(vertices >= 4);
+            IM_CHECK(boundsMax.x - boundsMin.x > 20.0f);
+            IM_CHECK(boundsMax.y - boundsMin.y > 5.0f);
+            IM_CHECK(window->InnerClipRect.Overlaps(ImRect(boundsMin, boundsMax)));
+            Capture(ctx, a, "selection.bmp");
+            a.editor.SetText(before);
+            a.editor.SetSelection({0, 0}, {0, 0});
+            a.editor.SetCursorPosition({0, 0});
+            a.autosave = autosave;
+        };
+    }
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_navigation_and_tabs");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            std::string before = a.editor.GetText();
+            bool autosave = a.autosave;
+            a.autosave = false;
+            ImGuiWindow *window = nullptr;
+            for (ImGuiWindow *w : ImGui::GetCurrentContext()->Windows)
+                if (strstr(w->Name, "/editor_")) window = w;
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            auto reset = [&](const std::string& text, TextEditor::Coordinates pos) {
+                a.editor.SetText(text);
+                a.editor.SetCursorPosition(pos);
+                a.editor.SetSelection(pos, pos);
+                ctx->Yield(2);
+            };
+            reset("::", {0, 2});
+            ctx->KeyPress(ImGuiKey_LeftArrow);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 1);
+            IM_CHECK(!ImGui::GetIO().NavActive);
+            ctx->KeyPress(ImGuiKey_RightArrow);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 2);
+            std::string longText;
+            for (int i = 0; i < 200; ++i) longText += "line\n";
+            reset(longText, {0, 2});
+            ctx->Yield(3);
+            IM_CHECK(window->ScrollbarY);
+            ctx->MouseMoveToPos(ImVec2(window->Pos.x + window->Size.x - window->ScrollbarSizes.x * 0.5f,
+                                      window->InnerRect.Max.y - 20.0f));
+            ctx->MouseClick();
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mLine, 0);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 2);
+            IM_CHECK(window->Scroll.y > 0.0f);
+            IM_CHECK(a.editor.IsInsertSpaces());
+            reset("x", {0, 1});
+            ctx->KeyPress(ImGuiKey_Tab);
+            IM_CHECK(a.editor.GetText() == "x   \n");
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 4);
+            a.editor.Undo();
+            IM_CHECK(a.editor.GetText() == "x\n");
+            a.editor.Redo();
+            IM_CHECK(a.editor.GetText() == "x   \n");
+            a.editor.SetInsertSpaces(false);
+            reset("x", {0, 1});
+            ctx->KeyPress(ImGuiKey_Tab);
+            IM_CHECK(a.editor.GetText() == "x\t\n");
+            a.editor.SetInsertSpaces(true);
+            reset("    x", {0, 5});
+            ctx->KeyPress(ImGuiMod_Shift | ImGuiKey_Tab);
+            IM_CHECK(a.editor.GetText() == "x\n");
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 1);
+            a.editor.Undo();
+            IM_CHECK(a.editor.GetText() == "    x\n");
+            reset("a\nb", {1, 1});
+            a.editor.SetSelection({0, 0}, {1, 1});
+            ctx->KeyPress(ImGuiKey_Tab);
+            IM_CHECK(a.editor.GetText() == "    a\n    b\n");
+            a.editor.Undo();
+            IM_CHECK(a.editor.GetText() == "a\nb\n");
+            a.editor.Redo();
+            IM_CHECK(a.editor.GetText() == "    a\n    b\n");
+            a.editor.SetText(before);
+            a.editor.SetSelection({0, 0}, {0, 0});
+            a.editor.SetCursorPosition({0, 0});
+            a.autosave = autosave;
+        };
+    }
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_word_delete_and_ime");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            std::string before = a.editor.GetText();
+            bool autosave = a.autosave;
+            a.autosave = false;
+            ImGuiWindow *window = nullptr;
+            for (ImGuiWindow *w : ImGui::GetCurrentContext()->Windows)
+                if (strstr(w->Name, "/editor_")) window = w;
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            a.editor.SetText("one two");
+            a.editor.SetCursorPosition({0, 7});
+            a.editor.SetSelection({0, 7}, {0, 7});
+            ctx->Yield(2);
+#if PLATFORM_WINDOWS
+            HWND hwnd = static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);
+            HIMC context = ImmGetContext(hwnd);
+            IM_CHECK(context != nullptr);
+            COMPOSITIONFORM form{};
+            CANDIDATEFORM candidate{};
+            bool point = ImmGetCompositionWindow(context, &form) && form.dwStyle == CFS_POINT;
+            bool candidates = ImmGetCandidateWindow(context, 0, &candidate) && candidate.dwStyle == CFS_EXCLUDE;
+            ImmReleaseContext(hwnd, context);
+            IM_CHECK(point);
+            IM_CHECK(candidates);
+#endif
+            ctx->KeyPress(ImGuiMod_Shift | ImGuiKey_Backspace);
+            IM_CHECK(a.editor.GetText() == "one \n");
+            a.editor.Undo();
+            IM_CHECK(a.editor.GetText() == "one two\n");
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_Backspace);
+            IM_CHECK(a.editor.GetText() == "one \n");
+            a.editor.Undo();
+            a.editor.SetImeComposing(true);
+            ctx->KeyPress(ImGuiKey_LeftArrow);
+            ctx->KeyPress(ImGuiKey_Backspace);
+            ctx->KeyPress(ImGuiKey_Tab);
+            IM_CHECK(a.editor.GetText() == "one two\n");
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 7);
+            ctx->KeyChars("\xe4\xb8\xad");
+            IM_CHECK(a.editor.GetText() == "one two\xe4\xb8\xad\n");
+            a.editor.SetImeComposing(false);
+            a.editor.SetText("one \xe4\xb8\xad\xe6\x96\x87");
+            a.editor.SetCursorPosition({0, 6});
+            a.editor.SetSelection({0, 6}, {0, 6});
+            ctx->KeyPress(ImGuiMod_Shift | ImGuiKey_Backspace);
+            IM_CHECK(a.editor.GetText() == "one \n");
+            a.editor.Undo();
+            IM_CHECK(a.editor.GetText() == "one \xe4\xb8\xad\xe6\x96\x87\n");
+            a.editor.SetText(before);
+            a.editor.SetSelection({0, 0}, {0, 0});
+            a.editor.SetCursorPosition({0, 0});
+            a.autosave = autosave;
+        };
+    }
+    {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "recover_missing_key_release");
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            ImGuiContext *original = ImGui::GetCurrentContext();
+            ImGuiContext *isolated = ImGui::CreateContext();
+            auto *right = ImGui::GetKeyData(ImGuiKey_RightArrow);
+            auto *del = ImGui::GetKeyData(ImGuiKey_Delete);
+            right->Down = del->Down = true;
+            right->DownDuration = del->DownDuration = 1.0f;
+            ImGui::GetKeyData((ImGuiKey)ImGuiMod_Ctrl)->Down = true;
+            mg::InputState::ReleaseKeysNotHeld([](int native) { return native == 0x27; });
+            ImGui::UpdateInputEvents(false);
+            bool heldPreserved = right->Down;
+            bool deleteReleased = !del->Down;
+            mg::InputState::ReleaseKeysNotHeld([](int) { return false; });
+            ImGui::UpdateInputEvents(false);
+            bool rightReleased = !right->Down && !ImGui::IsKeyPressed(ImGuiKey_RightArrow);
+            bool modifierReleased = !ImGui::GetKeyData((ImGuiKey)ImGuiMod_Ctrl)->Down;
+            ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, true);
+            ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, false);
+            mg::InputState::ReleaseKeysNotHeld([](int) { return false; });
+            ImGui::UpdateInputEvents(true);
+            bool tapPressed = right->Down;
+            ImGui::UpdateInputEvents(true);
+            bool tapReleased = !right->Down && isolated->InputEventsQueue.empty();
+            ImGui::DestroyContext(isolated);
+            ImGui::SetCurrentContext(original);
+            IM_CHECK(heldPreserved);
+            IM_CHECK(deleteReleased);
+            IM_CHECK(rightReleased);
+            IM_CHECK(modifierReleased);
+            IM_CHECK(tapPressed && tapReleased);
+        };
+    }
     // --- Slide map parsing ----------------------------------------------------
     {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "slide_map");

@@ -31,6 +31,11 @@ Use **Cmd** on macOS or **Ctrl** on Windows: **S** saves, **O** opens,
 **P** opens commands, **Z** undoes, and **Shift+Z** redoes.
 File → Export produces PDF, PPTX, or HTML beside the deck.
 
+**Tab** inserts spaces to the next four-column tab stop by default. Disable
+**Settings → Use spaces for tabs** to insert literal tabs. **Shift+Tab**
+unindents the current line or selected lines; **Shift+Backspace** and
+**Ctrl+Backspace** delete the preceding word.
+
 ## Thanks
 
 [Dear ImGui](https://github.com/ocornut/imgui),

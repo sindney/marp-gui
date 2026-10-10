@@ -34,6 +34,7 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app);
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
+#include "input_state.h"
 
 #include <algorithm>
 #include <atomic>
@@ -469,6 +470,7 @@ int main(int argc, char *argv[]) {
     App app;
     std::string deckArg;
     fs::path screenshot;
+    mg::InputState inputState;
 #ifdef MARP_GUI_TESTS
     bool testDeck = true; // never modify a caller's deck during automation
 #else
@@ -692,15 +694,26 @@ int main(int argc, char *argv[]) {
     auto launchTime = std::chrono::steady_clock::now();
     int captureFrames = 0;
     bool captureFailed = false;
+#if PLATFORM_WINDOWS
+    bool fastImePolling = false;
+#endif
+    inputState.Attach(window, app.editor);
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             ImGui_ImplSDL3_ProcessEvent(&ev);
+            inputState.Event(ev);
             if (ev.type == SDL_EVENT_QUIT) running = false;
             if (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                 ev.window.windowID == SDL_GetWindowID(window))
                 running = false;
         }
+
+#if PLATFORM_WINDOWS && !defined(MARP_GUI_TESTS)
+        mg::InputState::ReleaseKeysNotHeld([](int native) {
+            return (GetAsyncKeyState(native) & 0x8000) != 0;
+        });
+#endif
 
         // --- Periodic logic ---------------------------------------------------------
         auto now = std::chrono::steady_clock::now();
@@ -920,6 +933,9 @@ int main(int argc, char *argv[]) {
                 ImGui::EndCombo();
             }
 
+            bool insertSpaces = app.editor.IsInsertSpaces();
+            if (ImGui::Checkbox("Use spaces for tabs", &insertSpaces))
+                app.editor.SetInsertSpaces(insertSpaces);
             ImGui::Checkbox("Autosave", &app.autosave);
             if (ImGui::Checkbox("Log to file", &app.logToFile)) {
                 if (app.logToFile) {
@@ -973,10 +989,8 @@ int main(int argc, char *argv[]) {
         ImGui::BeginChild("editor-pane", ImVec2(editorW, 0), true);
         app.editor.Render("editor");
 
-        // Position the IME candidate window at the editor caret. The vendored
-        // TextEditor records the exact caret rect when it draws the cursor
-        // (GetCaretScreenPos), so this is pixel-exact — no approximation.
-        {
+        // Anchor the native IME UI to the focused editor caret.
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
             ImGuiContext &g = *ImGui::GetCurrentContext();
             g.PlatformImeData.WantVisible = true;
             g.PlatformImeData.WantTextInput = true;
@@ -1256,10 +1270,22 @@ int main(int argc, char *argv[]) {
         }
 #endif
 
+#if PLATFORM_WINDOWS
+        // Pump IME messages between display refreshes.
+        bool fastPolling = inputState.WantsFastPolling();
+        if (fastPolling != fastImePolling) {
+            SDL_GL_SetSwapInterval(fastPolling ? 0 : 1);
+            fastImePolling = fastPolling;
+        }
+#endif
         SDL_GL_SwapWindow(window);
+#if PLATFORM_WINDOWS
+        if (fastImePolling) SDL_Delay(1);
+#endif
     }
 
     // --- Shutdown --------------------------------------------------------------
+    inputState.Detach();
     auto shutdownStart = std::chrono::steady_clock::now();
     auto stepMs = [&](const char *what) {
         LOGD << "shutdown: " << what << " took "
