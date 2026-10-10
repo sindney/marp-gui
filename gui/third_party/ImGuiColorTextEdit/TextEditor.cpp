@@ -1146,6 +1146,8 @@ void TextEditor::Render(const char* aTitle, const ImVec2& aSize, bool aBorder)
 	{
 		ImVec2 cursor = ImGui::GetCursorPos();
 		ImVec2 size = ImGui::GetContentRegionAvail();
+		size.x += ImGui::GetScrollX();
+		size.y += ImGui::GetScrollY();
 		ImGui::InvisibleButton("##text-input", ImVec2(std::max(size.x, 1.0f), std::max(size.y, 1.0f)));
 		ImGui::SetCursorPos(cursor);
 		HandleMouseInputs();

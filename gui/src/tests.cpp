@@ -112,6 +112,137 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
         };
     }
     {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_scrolled_selection");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            std::string before = a.editor.GetText();
+            bool autosave = a.autosave;
+            a.autosave = false;
+            ImGuiWindow *window = nullptr;
+            for (ImGuiWindow *w : ImGui::GetCurrentContext()->Windows)
+                if (strstr(w->Name, "/editor_")) window = w;
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            a.editor.SetText(R"deck(---
+marp: true
+theme: programmer
+---
+
+<!-- _class: lead -->
+<!-- _paginate: skip -->
+
+# AI 时代 - 手游性能优化
+**个人提效**案例与思考
+
+> by xinhou
+
+---
+
+<!-- _class: lead -->
+<!-- _paginate: skip -->
+
+# 数据
+
+辅助筛选，自动分析
+
+# 工具
+
+开发，使用工具
+
+# 经验
+
+沉淀为知识库、文本复用
+
+---
+
+<!-- _header: 日常工作 -->
+
+:x: **TAPD、企微**收到性能问题，拉群，抓数据
+从企微文档查找并**手动下载**对应性能数据，解压到本地
+通过**工具、脚本**分析数据，根据**个人经验**（脑袋里、文档中）得出结论
+
+:white_check_mark: TAPD、企微收到性能问题，拉群，抓数据
+将企微文档**转发**至 iMate、Knot 机器人，**自动**寻找下载对应的性能数据
+通过 **Skill、MCP、CLI** 分析数据，根据**知识库中的经验**得出结论
+
+> 现实：企微文档机器人权限**限时**。下载企微云盘文件大小有**限制**。机器人文件传输大小有**限制**。
+直接拒绝了大文件分析，如 UTrace、GPU Capture 的自动化分析
+
+---
+
+<!-- _header: 数据 -->
+
+**特点**：巨量、分散
+
+- 平台提供 CLI、API 让 Agent、Claw 找到并下载
+
+**目的**：让 AI 看懂数据
+
+- 提供 CLI、API 让 AI Query
+- 转换为结构化数据：如 SQLite 数据库
+
+---
+
+<!-- _header: 工具 -->
+
+**分类**：GUI 工具、CLI 工具
+
+让 AI **理解数据**是工具的**基础**
+
+Vibe Coding 人手一套定制化工具 :ok:
+
+自己用的好是从**个人**提效转换为**团队**提效的**前提**
+)deck");
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.SetSelection({0, 0}, {0, 0});
+            ctx->Yield(3);
+            auto lines = a.editor.GetTextLines();
+            for (const char *prefix : {":x:", "- 平台提供 CLI", "自己用的好"}) {
+                int line = 0;
+                while (line < (int)lines.size() && lines[line].rfind(prefix, 0) != 0) ++line;
+                IM_CHECK(line < (int)lines.size());
+                int columns = 0;
+                for (const unsigned char *p = (const unsigned char *)prefix; *p; ++p)
+                    if ((*p & 0xc0) != 0x80) ++columns;
+                a.editor.SetCursorPosition({line, columns});
+                ctx->Yield(3);
+                ctx->ScrollToY(window->ID, (line - 8) * a.editor.GetCaretHeight());
+                ctx->Yield(3);
+                float scrollY = window->Scroll.y;
+                IM_CHECK(scrollY > 0.0f);
+                ImVec2 end = a.editor.GetCaretScreenPos();
+                a.editor.SetCursorPosition({line, 0});
+                ctx->Yield(3);
+                ImVec2 start = a.editor.GetCaretScreenPos();
+                IM_CHECK(window->InnerClipRect.Contains(start));
+                IM_CHECK(window->InnerClipRect.Contains(end));
+                ctx->MouseMoveToPos(ImVec2(start.x + 1.0f, start.y + 3.0f));
+                ctx->MouseDown();
+                ctx->MouseMoveToPos(ImVec2(end.x, end.y + 3.0f));
+                ctx->MouseUp();
+                ctx->Yield(2);
+                IM_CHECK(a.editor.HasSelection());
+                IM_CHECK(a.editor.GetSelectedText() == prefix);
+                ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_C);
+                IM_CHECK(std::string(ImGui::GetClipboardText()) == prefix);
+                ImU32 color = TextEditor::GetProgrammerPalette()[(int)TextEditor::PaletteIndex::Selection];
+                int vertices = 0;
+                for (const auto &vertex : window->DrawList->VtxBuffer)
+                    if (vertex.col == color && vertex.pos.y >= start.y &&
+                        vertex.pos.y <= start.y + a.editor.GetCaretHeight()) ++vertices;
+                IM_CHECK(vertices >= 4);
+                IM_CHECK_EQ(window->Scroll.y, scrollY);
+                Capture(ctx, a, "scrolled-selection.bmp");
+                a.editor.SetSelection({line, 0}, {line, 0});
+            }
+            a.editor.SetText(before);
+            a.editor.SetSelection({0, 0}, {0, 0});
+            a.editor.SetCursorPosition({0, 0});
+            a.autosave = autosave;
+        };
+    }
+    {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_navigation_and_tabs");
         t->UserData = app;
         t->TestFunc = [](ImGuiTestContext *ctx) {
