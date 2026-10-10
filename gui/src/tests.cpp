@@ -244,6 +244,8 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
         t->TestFunc = [](ImGuiTestContext *ctx) {
             ImGuiContext *original = ImGui::GetCurrentContext();
             ImGuiContext *isolated = ImGui::CreateContext();
+            // Native key codes in ReleaseKeysNotHeld use Windows modifiers.
+            ImGui::GetIO().ConfigMacOSXBehaviors = false;
             auto *right = ImGui::GetKeyData(ImGuiKey_RightArrow);
             auto *del = ImGui::GetKeyData(ImGuiKey_Delete);
             right->Down = del->Down = true;
