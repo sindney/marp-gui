@@ -46,7 +46,7 @@ public:
 #if PLATFORM_WINDOWS
         bool recentActivity = mLastImeActivity && SDL_GetTicksNS() - mLastImeActivity < 100000000ULL;
         return mWindow && GetFocus() == mWindow &&
-               (mEditor->IsImeComposing() || recentActivity);
+               (mImeVisible || mEditor->IsImeComposing() || recentActivity);
 #else
         return false;
 #endif

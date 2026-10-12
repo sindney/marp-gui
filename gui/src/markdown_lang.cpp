@@ -1,156 +1,172 @@
-// Hand-written Markdown tokenizer for ImGuiColorTextEdit — see markdown_lang.h.
-//
-// TextEditor calls mTokenize per line segment; cross-line constructs use the
-// LanguageDefinition's comment delimiters: we map fenced code blocks to
-// "```" ... "```" so TextEditor's built-in block tracking keeps us fast.
-
+// Native Markdown highlighting: bounded byte scanning, no allocations or regex.
 #include "markdown_lang.h"
 
 namespace markdown_lang {
-
+namespace {
 using PaletteIndex = TextEditor::PaletteIndex;
 
-static bool IsIdentChar(char c) {
+static bool IsIdent(unsigned char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
            (c >= '0' && c <= '9') || c == '_';
 }
-
-static bool Tokenize(const char *in_begin, const char *in_end,
-                     const char *&out_begin, const char *&out_end,
-                     PaletteIndex &paletteIndex) {
-    const char *p = in_begin;
-
-    // --- HTML comments <!-- ... --> (single-line part; block handled below) --
-    if (p + 4 <= in_end && strncmp(p, "<!--", 4) == 0) {
-        out_begin = p;
-        const char *close = strstr(p + 4, "-->");
-        out_end = close ? close + 3 : in_end;
-        paletteIndex = PaletteIndex::Comment;
-        return true;
-    }
-
-    // --- ATX header marker at line start --------------------------------------
-    if (*p == '#') {
-        const char *q = p;
-        while (q < in_end && *q == '#') ++q;
-        if (q < in_end && (*q == ' ' || *q == '\t')) {
-            out_begin = p; out_end = in_end;
-            paletteIndex = PaletteIndex::Keyword;
-            return true;
-        }
-    }
-
-    // --- List markers at line start --------------------------------------------
-    if ((*p == '-' || *p == '*' || *p == '+') && p + 1 < in_end && p[1] == ' ') {
-        out_begin = p; out_end = p + 1;
-        paletteIndex = PaletteIndex::Preprocessor;
-        return true;
-    }
-    // numbered list "1. "
-    if (*p >= '0' && *p <= '9') {
-        const char *q = p;
-        while (q < in_end && *q >= '0' && *q <= '9') ++q;
-        if (q + 1 < in_end && (*q == '.' || *q == ')') && q[1] == ' ') {
-            out_begin = p; out_end = q + 1;
-            paletteIndex = PaletteIndex::Preprocessor;
-            return true;
-        }
-    }
-
-    // --- Blockquote -------------------------------------------------------------
-    if (*p == '>' && (p + 1 == in_end || p[1] == ' ')) {
-        out_begin = p; out_end = in_end;
-        paletteIndex = PaletteIndex::Comment;
-        return true;
-    }
-
-    // --- Inline code span `...` --------------------------------------------------
-    if (*p == '`') {
-        out_begin = p;
-        const char *q = p + 1;
-        while (q < in_end && *q != '`') ++q;
-        out_end = (q < in_end) ? q + 1 : in_end;
-        paletteIndex = PaletteIndex::String;
-        return true;
-    }
-
-    // --- Emphasis markers (** * __ _) -------------------------------------------
-    if (*p == '*' || *p == '_') {
-        const char *q = p;
-        while (q < in_end && *q == *p) ++q;
-        out_begin = p; out_end = q;
-        paletteIndex = PaletteIndex::Punctuation; // emphasis markers
-        return true;
-    }
-
-    // --- Links / images: [text](url), ![alt](url) --------------------------------
-    if (*p == '[' || (*p == '!' && p + 1 < in_end && p[1] == '[')) {
-        out_begin = p;
-        const char *q = (*p == '!') ? p + 1 : p;
-        q = strchr(q, ']');
-        if (q && q + 1 < in_end && q[1] == '(') {
-            const char *r = strchr(q + 2, ')');
-            out_end = r ? r + 1 : q + 1;
-        } else {
-            out_end = q ? q + 1 : p + 1;
-        }
-        paletteIndex = PaletteIndex::Identifier;
-        return true;
-    }
-
-    if (*p == ':') {
-        const char *q = p + 1;
-        while (q < in_end && (IsIdentChar(*q) || *q == '-' || *q == '+')) ++q;
-        if (q > p + 1 && q < in_end && *q == ':') {
-            out_begin = p; out_end = q + 1;
-            paletteIndex = PaletteIndex::Default;
-            return true;
-        }
-    }
-
-    // --- YAML-ish key: value at line start (front matter, directives) -----------
-    if (IsIdentChar(*p)) {
-        const char *q = p;
-        while (q < in_end && IsIdentChar(*q)) ++q;
-        if (q < in_end && *q == ':' && (q + 1 == in_end || isspace((unsigned char)q[1]))) {
-            out_begin = p; out_end = q + 1;
-            paletteIndex = PaletteIndex::KnownIdentifier;
-            return true;
-        }
-        out_begin = p; out_end = q;
-        paletteIndex = PaletteIndex::Default;
-        return true;
-    }
-
-    // --- Punctuation ---------------------------------------------------------------
-    if (ispunct((unsigned char)*p)) {
-        out_begin = p; out_end = p + 1;
-        paletteIndex = PaletteIndex::Punctuation;
-        return true;
-    }
-
-    return false; // let default (whitespace/other) handling proceed
+static bool IsSpace(unsigned char c) {
+    return c == ' ' || (c >= '\t' && c <= '\r');
+}
+static bool IsPunctuation(unsigned char c) {
+    return (c >= '!' && c <= '/') || (c >= ':' && c <= '@') ||
+           (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
 }
 
-const TextEditor::LanguageDefinition &Markdown() {
-    static bool inited = false;
-    static TextEditor::LanguageDefinition lang;
-    if (!inited) {
-        lang.mName = "Markdown";
-        lang.mCaseSensitive = true;
-        lang.mAutoIndentation = false;
-        // HTML comments (block-aware, built-in tracking)
-        lang.mCommentStart = "<!--";
-        lang.mCommentEnd = "-->";
-        lang.mSingleLineComment = "";
-        // Fenced code blocks piggyback on block-comment tracking: fast and
-        // cross-line without regex. Note: this means ```...``` renders in the
-        // comment color — acceptable, code still stands out.
-        lang.mPreprocChar = '~'; // unused
-        lang.mTokenize = Tokenize;
-        inited = true;
+struct ByteView {
+    const char* bytes;
+    size_t size;
+    unsigned char operator[](size_t i) const { return (unsigned char)bytes[i]; }
+};
+struct GlyphView {
+    const TextEditor::Line& glyphs;
+    size_t size;
+    unsigned char operator[](size_t i) const { return glyphs[i].mChar; }
+};
+struct Token {
+    size_t first, end;
+    PaletteIndex color;
+};
+
+// Same scanner serves the editor's glyph buffer and the legacy token callback.
+// Closing-bracket limits are computed once per line, when a link is encountered.
+// Missing ] or ) then costs a constant-time check rather than repeated suffix
+// searches (e.g. while typing a long line of unfinished links).
+template<class Text> class Scanner {
+public:
+    explicit Scanner(Text text) : mText(text) {}
+
+    Token Next(size_t first) {
+        const size_t size = mText.size;
+        const unsigned char c = mText[first];
+        auto token = [&](size_t end, PaletteIndex color) { return Token{first, end, color}; };
+        size_t q;
+        switch (c) {
+        case '<':
+            if (size - first >= 4 && mText[first + 1] == '!' &&
+                mText[first + 2] == '-' && mText[first + 3] == '-') {
+                q = first + 4;
+                while (size - q >= 3 && !(mText[q] == '-' && mText[q + 1] == '-' && mText[q + 2] == '>')) ++q;
+                return token(size - q >= 3 ? q + 3 : size, PaletteIndex::Comment);
+            }
+            break;
+        case '#':
+            q = first;
+            while (q < size && mText[q] == '#') ++q;
+            if (q < size && (mText[q] == ' ' || mText[q] == '\t'))
+                return token(size, PaletteIndex::Keyword);
+            return token(q, PaletteIndex::Punctuation);
+        case '-': case '+': case '*':
+            if (size - first > 1 && mText[first + 1] == ' ')
+                return token(first + 1, PaletteIndex::Preprocessor);
+            break;
+        case '>':
+            if (size - first == 1 || mText[first + 1] == ' ')
+                return token(size, PaletteIndex::Comment);
+            break;
+        case '`':
+            q = first + 1;
+            while (q < size && mText[q] != '`') ++q;
+            return token(q < size ? q + 1 : size, PaletteIndex::String);
+        case ':':
+            q = first + 1;
+            while (q < size && (IsIdent(mText[q]) || mText[q] == '-' || mText[q] == '+')) ++q;
+            if (q > first + 1 && q < size && mText[q] == ':')
+                return token(q + 1, PaletteIndex::Default);
+            break;
+        }
+        if (c >= '0' && c <= '9') {
+            q = first;
+            while (q < size && mText[q] >= '0' && mText[q] <= '9') ++q;
+            if (size - q > 1 && (mText[q] == '.' || mText[q] == ')') && mText[q + 1] == ' ')
+                return token(q + 1, PaletteIndex::Preprocessor);
+        }
+        if (c == '*' || c == '_') {
+            q = first;
+            while (q < size && mText[q] == c) ++q;
+            return token(q, PaletteIndex::Punctuation);
+        }
+        if (c == '[' || (c == '!' && size - first > 1 && mText[first + 1] == '[')) {
+            FindLinkLimits();
+            q = first + (c == '!' ? 1 : 0);
+            if (!mHasBracket || q >= mLastBracket)
+                return token(first + 1, PaletteIndex::Identifier);
+            while (mText[q] != ']') ++q; // bounded by mLastBracket
+            if (size - q > 1 && mText[q + 1] == '(' && mHasParen && q + 2 <= mLastParen) {
+                size_t end = q + 2;
+                while (mText[end] != ')') ++end; // bounded by mLastParen
+                return token(end + 1, PaletteIndex::Identifier);
+            }
+            return token(q + 1, PaletteIndex::Identifier);
+        }
+        if (IsIdent(c)) {
+            q = first;
+            while (q < size && IsIdent(mText[q])) ++q;
+            if (q < size && mText[q] == ':' && (q + 1 == size || IsSpace(mText[q + 1])))
+                return token(q + 1, PaletteIndex::KnownIdentifier);
+            return token(q, PaletteIndex::Default);
+        }
+        if (IsPunctuation(c)) return token(first + 1, PaletteIndex::Punctuation);
+        // Consume UTF-8 prose and whitespace together. ASCII delimiters cannot
+        // occur inside UTF-8 sequences, so no decoding or locale lookup is needed.
+        q = first + 1;
+        while (q < size && !IsIdent(mText[q]) && !IsPunctuation(mText[q])) ++q;
+        return token(q, PaletteIndex::Default);
     }
+
+private:
+    void FindLinkLimits() {
+        if (mLinkLimitsKnown) return;
+        mLinkLimitsKnown = true;
+        for (size_t i = mText.size; i > 0;) {
+            --i;
+            if (!mHasBracket && mText[i] == ']') { mLastBracket = i; mHasBracket = true; }
+            if (!mHasParen && mText[i] == ')') { mLastParen = i; mHasParen = true; }
+            if (mHasBracket && mHasParen) break;
+        }
+    }
+    Text mText;
+    bool mLinkLimitsKnown = false, mHasBracket = false, mHasParen = false;
+    size_t mLastBracket = 0, mLastParen = 0;
+};
+
+static bool Tokenize(const char* begin, const char* end, const char*& tokenBegin,
+                     const char*& tokenEnd, PaletteIndex& color) {
+    if (begin == end) return false;
+    Scanner<ByteView> scanner({begin, (size_t)(end - begin)});
+    Token token = scanner.Next(0);
+    tokenBegin = begin + token.first;
+    tokenEnd = begin + token.end;
+    color = token.color;
+    return true;
+}
+
+static void ColorizeLine(TextEditor::Line& line) {
+    Scanner<GlyphView> scanner({line, line.size()});
+    for (size_t first = 0; first < line.size();) {
+        Token token = scanner.Next(first);
+        for (size_t i = first; i < token.end; ++i) line[i].mColorIndex = token.color;
+        first = token.end;
+    }
+}
+} // namespace
+
+const TextEditor::LanguageDefinition& Markdown() {
+    static const TextEditor::LanguageDefinition lang = [] {
+        TextEditor::LanguageDefinition definition;
+        definition.mName = "Markdown";
+        definition.mAutoIndentation = false;
+        definition.mCommentStart = "<!--";
+        definition.mCommentEnd = "-->";
+        definition.mPreprocChar = '~';
+        definition.mTokenize = Tokenize;
+        definition.mColorizeLine = ColorizeLine;
+        return definition;
+    }();
     return lang;
 }
-
 } // namespace markdown_lang

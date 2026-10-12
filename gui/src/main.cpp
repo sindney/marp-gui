@@ -90,16 +90,32 @@ int SlideForLine(const std::vector<int> &starts, int line) {
     return idx;
 }
 
+std::vector<int> SlideStarts(const TextEditor& editor) {
+    std::vector<int> starts{0};
+    bool frontMatter = editor.IsLineSeparator(0), fmDone = false;
+    for (int line = 1; line < editor.GetTotalLines(); ++line) {
+        if (!editor.IsLineSeparator(line)) continue;
+        if (frontMatter) { frontMatter = false; fmDone = true; }
+        else if (fmDone) starts.push_back(line + 1);
+    }
+    return starts;
+}
+
 // ---------------------------------------------------------------------------
 // Background marp-cli build worker.
 // Runs: npx marp <deck> --theme-set <theme> --allow-local-files --images png
 //          -o <buildDir>/preview.png
 // which produces preview.001.png, preview.002.png, ...
 // ---------------------------------------------------------------------------
+struct DecodedSlide {
+    int w = 0, h = 0;
+    std::vector<unsigned char> pixels;
+};
+
 struct BuildResult {
     bool ok = false;
     std::string error;
-    std::vector<std::string> pngPaths; // filled on success
+    std::vector<DecodedSlide> slides; // decoded on the worker, no PNG I/O on the UI thread
     unsigned long long generation = 0; // matches App::buildGeneration when produced
 };
 
@@ -229,19 +245,30 @@ private:
         }
 
         // Collect preview.NNN.png in order.
+        std::vector<std::string> pngPaths;
         for (auto &e : fs::directory_iterator(buildDir_, ec)) {
             auto name = e.path().filename().string();
             if (name.rfind("preview.", 0) == 0 && e.path().extension() == ".png" &&
                 name.find(".png") == name.size() - 4) {
-                r.pngPaths.push_back(e.path().string());
+                pngPaths.push_back(e.path().string());
             }
         }
-        std::sort(r.pngPaths.begin(), r.pngPaths.end());
+        std::sort(pngPaths.begin(), pngPaths.end());
 
-        if (r.pngPaths.empty()) {
+        if (pngPaths.empty()) {
             r.ok = false;
             r.error = "marp-cli produced no PNGs. " + errText;
             return r;
+        }
+        for (const auto& path : pngPaths) {
+            if (quit_) { r.error = "shutdown"; return r; }
+            DecodedSlide slide;
+            int channels = 0;
+            stbi_uc* pixels = stbi_load(path.c_str(), &slide.w, &slide.h, &channels, 4);
+            if (!pixels) { r.error = "failed to decode preview PNG: " + path; return r; }
+            slide.pixels.assign(pixels, pixels + (size_t)slide.w * slide.h * 4);
+            stbi_image_free(pixels);
+            r.slides.push_back(std::move(slide));
         }
         r.ok = true;
         r.error = errText; // may contain warnings; keep for status bar
@@ -268,18 +295,14 @@ struct SlideTexture {
     GLuint id = 0;
     int w = 0, h = 0;
 
-    void Upload(const std::string &path) {
-        int w = 0, h = 0, ch = 0;
-        stbi_uc *data = stbi_load(path.c_str(), &w, &h, &ch, 4);
-        if (!data) return;
+    void Upload(const DecodedSlide &slide) {
         Reset();
         glGenTextures(1, &id);
         glBindTexture(GL_TEXTURE_2D, id);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-        stbi_image_free(data);
-        this->w = w; this->h = h;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, slide.w, slide.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, slide.pixels.data());
+        w = slide.w; h = slide.h;
     }
 
     void Reset() {
@@ -323,12 +346,37 @@ bool PreviewReady(const App &app) {
 
 void LoadDeck(App &app) {
     std::string text = ReadFile(app.deckPath);
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    app.lastDiskText = text;
     app.editor.SetText(text);
     app.slideStarts = SlideStarts(text);
     app.dirtySinceLastSave = false;
+    app.buildScheduled = false;
     std::error_code ec;
     app.lastWriteTime = fs::last_write_time(app.deckPath, ec);
     if (fs::is_regular_file(app.deckPath, ec)) app.recentFiles.Remember(app.deckPath);
+}
+
+bool PollDeckChanges(App& app) {
+    // A reload during composition or before autosave can replace pending input.
+    if (app.dirtySinceLastSave || app.editor.IsImeComposing()) return false;
+    std::error_code ec;
+    auto wt = fs::last_write_time(app.deckPath, ec);
+    if (ec || wt == app.lastWriteTime) return false;
+    std::ifstream file(app.deckPath, std::ios::binary);
+    if (!file) return false;
+    std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    if (file.bad()) return false;
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    app.lastWriteTime = wt;
+    if (text == app.lastDiskText) return false;
+    app.lastDiskText = text;
+    if (text == app.editor.GetText()) return false;
+    app.editor.ReplaceTextPreservingView(text);
+    app.slideStarts = SlideStarts(app.editor);
+    app.lastCursorLine = -1;
+    app.status = "reloaded (file changed on disk)";
+    return true;
 }
 
 // Point everything at a (possibly new) deck + theme and force a fresh build.
@@ -372,8 +420,9 @@ void SetViewSlide(App &app, int slide) {
 }
 
 static bool SaveDeck(App &app) {
+    std::string text = app.editor.GetText();
     std::ofstream f(app.deckPath, std::ios::binary | std::ios::trunc);
-    f << app.editor.GetText();
+    f << text;
     f.close();
     if (!f) {
         app.status = "save failed";
@@ -382,6 +431,7 @@ static bool SaveDeck(App &app) {
         return false;
     }
     app.dirtySinceLastSave = false;
+    app.lastDiskText = std::move(text);
     std::error_code ec;
     app.lastWriteTime = fs::last_write_time(app.deckPath, ec);
     app.status = "saved " + app.deckPath.filename().string();
@@ -420,25 +470,53 @@ static void UpdateWindowTitle(SDL_Window *window, const App &app) {
 }
 
 // Owned export work: only the main thread reads/writes App state.
-struct ExportResult { int code; std::string message; };
+struct ExportResult { int code; fs::path output; std::string message; };
 static mg::Process exportProcess;
 static std::future<ExportResult> exportFuture;
 
-void ExportDeck(App &app, const std::string &fmt) {
+void ExportDeck(App &app, const std::string &fmt, const std::vector<std::string>& command) {
+    app.showExportDialog = true;
     if (exportFuture.valid()) { app.status = "export already running"; return; }
-    if (!SaveDeck(app)) return;
-    fs::path out = app.deckPath;
+    fs::path out = fs::absolute(app.deckPath);
     out.replace_extension("." + fmt);
-    auto args = mg::MarpCommand();
+    app.exportPath = out;
+    app.exportError.clear();
+    app.exportFolderError.clear();
+    if (!SaveDeck(app)) {
+        app.exportPhase = ExportPhase::Failed;
+        app.exportError = app.lastError;
+        return;
+    }
+    auto args = command.empty() ? mg::MarpCommand() : command;
     args.insert(args.end(), {app.deckPath.string(), "--theme-set", app.themePath.string(),
                              "--allow-local-files", "--" + fmt, "-o", out.string()});
     fs::path log = app.runtimeDir / ("export_" + fmt + ".txt");
     app.status = "exporting " + fmt;
+    app.exportPhase = ExportPhase::Running;
     exportFuture = std::async(std::launch::async, [args, log, out, fmt] {
         int code = exportProcess.Run(args, log);
-        return ExportResult{code, code == 0 ? "exported " + out.filename().string()
-                                            : "export " + fmt + " failed: " + ReadFile(log)};
+        std::string error = ReadFile(log);
+        std::error_code ec;
+        if (code == 0 && (!fs::is_regular_file(out, ec) || fs::file_size(out, ec) == 0 || ec)) {
+            code = -1;
+            error = "No output file was generated.";
+        }
+        if (code != 0 && error.empty()) error = "Marp CLI exited with code " + std::to_string(code) + ".";
+        return ExportResult{code, out, code == 0 ? "exported " + out.filename().string()
+                                               : "export " + fmt + " failed: " + error};
     });
+}
+
+std::string ExportFolderURL(const fs::path& output) {
+    std::string folder = fs::absolute(output).parent_path().generic_u8string();
+    std::string url = folder.rfind("//", 0) == 0 ? "file:" : folder.front() == '/' ? "file://" : "file:///";
+    constexpr char hex[] = "0123456789ABCDEF";
+    for (unsigned char c : folder) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+            c == '/' || c == ':' || c == '-' || c == '_' || c == '.' || c == '~') url += c;
+        else { url += '%'; url += hex[c >> 4]; url += hex[c & 15]; }
+    }
+    return url;
 }
 
 // ---------------------------------------------------------------------------
@@ -490,15 +568,27 @@ int main(int argc, char *argv[]) {
     mg::InputState inputState;
 #ifdef MARP_GUI_TESTS
     bool testDeck = true; // never modify a caller's deck during automation
+    std::string testFilter;
 #else
     bool testDeck = false;
 #endif
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+#ifdef MARP_GUI_TESTS
+        if (arg == "--perf") { app.performanceMode = true; continue; }
+        if (arg == "--test-filter" && i + 1 < argc) { testFilter = argv[++i]; continue; }
+#endif
         if (arg == "--screenshot" && i + 1 < argc) screenshot = fs::absolute(argv[++i]);
         else if (arg == "--test-deck" && i + 1 < argc) { deckArg = argv[++i]; testDeck = true; }
         else if (!arg.empty() && arg[0] != '-') deckArg = arg;
-        else { std::fprintf(stderr, "Usage: marp_gui [deck.md] [--screenshot output.bmp]\n"); return 1; }
+        else {
+#ifdef MARP_GUI_TESTS
+            std::fprintf(stderr, "Usage: marp_gui_tests [--test-deck deck.md] [--perf] [--test-filter substring] [--screenshot output.bmp]\n");
+#else
+            std::fprintf(stderr, "Usage: marp_gui [deck.md] [--screenshot output.bmp]\n");
+#endif
+            return 1;
+        }
     }
 
     // SDL returns Contents/Resources for a bundle, or the executable directory.
@@ -678,9 +768,15 @@ int main(int argc, char *argv[]) {
     teIo.ConfigVerboseLevelOnError = ImGuiTestVerboseLevel_Debug;
     teIo.ConfigLogToTTY = true;
     teIo.ConfigRunSpeed = ImGuiTestRunSpeed_Cinematic; // visible but quick
+    if (app.performanceMode) {
+        teIo.ConfigRunSpeed = ImGuiTestRunSpeed_Fast;
+        teIo.ConfigNoThrottle = true;
+        SDL_GL_SetSwapInterval(0);
+    }
     RegisterMarpGuiTests(testEngine, &app);
     ImGuiTestEngine_Start(testEngine, ImGui::GetCurrentContext());
-    ImGuiTestEngine_QueueTests(testEngine, ImGuiTestGroup_Tests, "marp_gui",
+    ImGuiTestEngine_QueueTests(testEngine, app.performanceMode ? ImGuiTestGroup_Perfs : ImGuiTestGroup_Tests,
+                               testFilter.empty() ? (app.performanceMode ? "perf" : "marp_gui") : testFilter.c_str(),
                                ImGuiTestRunFlags_RunFromCommandLine);
 #endif
 
@@ -694,7 +790,7 @@ int main(int argc, char *argv[]) {
             return probeProcess.Run(args, log);
         });
     };
-    startProbe();
+    if (!app.performanceMode) startProbe();
     if (!fs::exists(app.themePath)) {
         app.lastError = "Theme not found: " + app.themePath.string();
         LOGE << app.lastError;
@@ -708,14 +804,27 @@ int main(int argc, char *argv[]) {
     fs::path buildDir = app.runtimeDir / "preview";
     app.worker = std::make_unique<BuildWorker>(
         app.deckPath.string(), app.themePath.string(), buildDir);
-    app.worker->Request(); // initial build (probe may flip marpCliMissing later)
+    if (!app.performanceMode) app.worker->Request(); // initial build
 
     bool running = true;
+#ifdef MARP_GUI_TESTS
+    if (ImGuiTestEngine_IsTestQueueEmpty(testEngine)) {
+        std::fprintf(stderr, "No tests match the requested filter.\n");
+        running = false;
+    }
+#endif
     auto launchTime = std::chrono::steady_clock::now();
     int captureFrames = 0;
     bool captureFailed = false;
+    BuildResult pendingPreview;
+    std::vector<std::unique_ptr<SlideTexture>> pendingTextures;
 #if PLATFORM_WINDOWS
     bool fastImePolling = false;
+    auto nextDisplayFrame = std::chrono::steady_clock::time_point{};
+    const SDL_DisplayMode* displayMode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
+    double refreshRate = displayMode && displayMode->refresh_rate > 0 ? displayMode->refresh_rate : 60.0;
+    auto displayPeriod = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1.0 / refreshRate));
 #endif
     inputState.Attach(window, app.editor);
     while (running) {
@@ -733,6 +842,26 @@ int main(int argc, char *argv[]) {
         mg::InputState::ReleaseKeysNotHeld([](int native) {
             return (GetAsyncKeyState(native) & 0x8000) != 0;
         });
+#endif
+
+#if PLATFORM_WINDOWS
+        // Native preedit is updated by the Windows message pump, not by ImGui.
+        // Keep pumping it between display frames instead of presenting the full
+        // OpenGL UI at ~1000 Hz and competing with the IME's own compositor.
+        bool fastPolling = app.performanceMode || inputState.WantsFastPolling();
+        if (fastPolling != fastImePolling) {
+            SDL_GL_SetSwapInterval(fastPolling ? 0 : 1);
+            fastImePolling = fastPolling;
+            nextDisplayFrame = {};
+        }
+        if (fastImePolling && !app.performanceMode) {
+            auto pumpTime = std::chrono::steady_clock::now();
+            if (pumpTime < nextDisplayFrame) {
+                SDL_Delay(1);
+                continue;
+            }
+            nextDisplayFrame = pumpTime + displayPeriod;
+        }
 #endif
 
         // --- Periodic logic ---------------------------------------------------------
@@ -756,13 +885,17 @@ int main(int argc, char *argv[]) {
         if (exportFuture.valid() && exportFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             auto result = exportFuture.get();
             app.status = result.message;
+            app.exportPhase = result.code == 0 ? ExportPhase::Succeeded : ExportPhase::Failed;
+            app.exportPath = std::move(result.output);
+            app.exportError = result.code == 0 ? "" : result.message;
+            app.showExportDialog = true;
             if (result.code != 0) app.lastError = result.message;
             else app.lastError.clear();
             LOGI << result.message;
         }
 
         // Debounce: schedule rebuild ~800 ms after last edit.
-        if (app.buildScheduled && now - app.lastEdit > std::chrono::milliseconds(800)) {
+        if (!app.performanceMode && !app.editor.IsImeComposing() && app.buildScheduled && now - app.lastEdit > std::chrono::milliseconds(800)) {
             app.buildScheduled = false;
             if (app.marpCliMissing) {
                 // marp-cli not installed — don't run the builder; the modal is up.
@@ -771,14 +904,10 @@ int main(int argc, char *argv[]) {
         }
 
         // External change detection: poll mtime ~1 s.
-        if (now - app.lastMtimePoll > std::chrono::seconds(1)) {
+        if (!app.performanceMode && now - app.lastMtimePoll > std::chrono::seconds(1)) {
             app.lastMtimePoll = now;
-            std::error_code ec;
-            auto wt = fs::last_write_time(app.deckPath, ec);
-            if (!ec && wt != app.lastWriteTime) {
-                LoadDeck(app);
+            if (PollDeckChanges(app)) {
                 if (!app.marpCliMissing) app.worker->Request();
-                app.status = "reloaded (file changed on disk)";
             }
         }
 
@@ -791,29 +920,37 @@ int main(int argc, char *argv[]) {
                 LOGD << "discarding stale build (gen " << br.generation
                      << " != " << app.buildGeneration << ")";
             } else if (br.ok) {
-                std::vector<std::unique_ptr<SlideTexture>> next;
-                for (auto &p : br.pngPaths) {
-                    auto t = std::make_unique<SlideTexture>();
-                    t->Upload(p);
-                    if (t->id) next.push_back(std::move(t));
-                }
-                if (!next.empty()) {
-                    app.slides = std::move(next);
-                    int total = (int)app.slides.size();
-                    if (app.cursorSlide >= total) app.cursorSlide = total - 1;
-                    if (app.viewSlide >= total) app.viewSlide = total - 1;
-                    app.status = "built " + std::to_string(total) + " slides";
-                    app.lastError.clear();
-                    LOGD << "built " << total << " slides";
-                } else {
-                    app.lastError = "failed to decode preview PNGs";
-                    LOGW << app.lastError;
-                }
+                pendingPreview = std::move(br);
+                pendingTextures.clear();
             } else {
                 // Keep last good preview.
                 app.lastError = br.error;
                 app.status = "build failed — keeping previous preview";
                 LOGW << "build failed: " << br.error;
+            }
+        }
+        if (!pendingPreview.slides.empty()) {
+            if (pendingPreview.generation != app.buildGeneration) {
+                pendingPreview.slides.clear();
+                pendingTextures.clear();
+            } else if (!app.editor.IsImeComposing()) {
+                // One upload per frame; keep the previous preview visible until
+                // the complete replacement is ready. Decode happened off-thread.
+                auto texture = std::make_unique<SlideTexture>();
+                texture->Upload(pendingPreview.slides[pendingTextures.size()]);
+                std::vector<unsigned char>().swap(pendingPreview.slides[pendingTextures.size()].pixels);
+                pendingTextures.push_back(std::move(texture));
+                if (pendingTextures.size() == pendingPreview.slides.size()) {
+                    app.slides = std::move(pendingTextures);
+                    pendingPreview.slides.clear();
+                    ++app.previewRevision;
+                    int total = (int)app.slides.size();
+                    app.cursorSlide = (std::min)(app.cursorSlide, total - 1);
+                    app.viewSlide = (std::min)(app.viewSlide, total - 1);
+                    app.status = "built " + std::to_string(total) + " slides";
+                    app.lastError.clear();
+                    LOGD << "built " << total << " slides";
+                }
             }
         }
 
@@ -928,6 +1065,42 @@ int main(int argc, char *argv[]) {
         }
 
         float topBars = ImGui::GetFrameHeight(); // menu bar only
+
+        if (app.showExportDialog) ImGui::OpenPopup("Export##modal");
+        ImGui::SetNextWindowSize(ImVec2((std::min)(560.0f * dpiScale, io.DisplaySize.x - 40.0f), 0), ImGuiCond_Always);
+        if (ImGui::BeginPopupModal("Export##modal", &app.showExportDialog, ImGuiWindowFlags_AlwaysAutoResize)) {
+            bool exporting = app.exportPhase == ExportPhase::Running;
+            if (exporting) {
+                ImGui::TextUnformatted("Exporting slide deck...");
+                ImGui::ProgressBar(-(float)ImGui::GetTime(), ImVec2(-1, 0), "Working...");
+            } else if (app.exportPhase == ExportPhase::Succeeded) {
+                ImGui::TextUnformatted("Export generated successfully.");
+            } else {
+                ImGui::TextUnformatted("Export failed.");
+                ImGui::TextWrapped("%s", app.exportError.c_str());
+            }
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Output file:");
+            ImGui::TextWrapped("%s", app.exportPath.u8string().c_str());
+            if (!app.exportFolderError.empty()) ImGui::TextWrapped("%s", app.exportFolderError.c_str());
+            ImGui::Separator();
+            ImGui::BeginDisabled(exporting);
+            if (ImGui::Button("Open containing folder")) {
+                app.exportFolderError.clear();
+                std::error_code ec;
+                if (!fs::is_directory(app.exportPath.parent_path(), ec))
+                    app.exportFolderError = "The output folder does not exist.";
+                else if (!SDL_OpenURL(ExportFolderURL(app.exportPath).c_str()))
+                    app.exportFolderError = std::string("Unable to open folder: ") + SDL_GetError();
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button(exporting ? "Run in background" : "Close") || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                app.showExportDialog = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
 
         // --- marp-cli missing (blocking modal: Retry / Close) -------------------------
         if (app.marpCliMissing) ImGui::OpenPopup("marp-cli not found##modal");
@@ -1057,7 +1230,7 @@ int main(int argc, char *argv[]) {
             app.dirtySinceLastSave = true;
             app.lastEdit = now;
             app.buildScheduled = true;
-            app.slideStarts = SlideStarts(app.editor.GetText());
+            app.slideStarts = SlideStarts(app.editor);
         }
         // Cursor -> slide sync: only when the cursor actually MOVED (click/keys).
         // This lets the preview browse freely until you click a line again.
@@ -1324,17 +1497,9 @@ int main(int argc, char *argv[]) {
         }
 #endif
 
-#if PLATFORM_WINDOWS
-        // Pump IME messages between display refreshes.
-        bool fastPolling = inputState.WantsFastPolling();
-        if (fastPolling != fastImePolling) {
-            SDL_GL_SetSwapInterval(fastPolling ? 0 : 1);
-            fastImePolling = fastPolling;
-        }
-#endif
         SDL_GL_SwapWindow(window);
 #if PLATFORM_WINDOWS
-        if (fastImePolling) SDL_Delay(1);
+        if (fastImePolling && !app.performanceMode) SDL_Delay(1);
 #endif
     }
 
@@ -1354,6 +1519,7 @@ int main(int argc, char *argv[]) {
     app.worker.reset(); // stop worker before GL teardown
     stepMs("worker stop");
     app.slides.clear();
+    pendingTextures.clear(); // GL textures must die before context teardown
     stepMs("slides clear");
 
 #ifdef MARP_GUI_TESTS
@@ -1362,6 +1528,7 @@ int main(int argc, char *argv[]) {
     ImGuiTestEngine_GetResultSummary(testEngine, &summary);
     passed = summary.CountSuccess;
     failed = summary.CountTested - summary.CountSuccess + summary.CountInQueue;
+    if (summary.CountTested == 0) ++failed;
     ImGuiTestEngine_Stop(testEngine);
     ImGuiTestEngine_DestroyContext(testEngine);
     std::fprintf(stderr, "[tests] %d passed, %d failed\n", passed, failed);

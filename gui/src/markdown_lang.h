@@ -2,9 +2,10 @@
 //
 // The stock std::regex-based highlighters in ImGuiColorTextEdit are
 // documented as disappointingly slow (only C/C++ got a fast tokenizer).
-// This follows the C++ tokenizer pattern: a plain per-line scanner, no regex.
+// Native per-line scanner: directly colors the editor's glyph buffer without
+// copying text, allocating tokens, regex, or C++ identifier-table lookups.
 //
-// Covered: ATX headers, emphasis/code span markers, fenced code blocks,
+// Covered: ATX headers, emphasis/code span markers (including fence markers),
 // links, HTML comments, YAML front matter, list markers.
 
 #pragma once

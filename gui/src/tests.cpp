@@ -41,7 +41,222 @@ static void Capture(ImGuiTestContext *ctx, App &app, const char *name) {
 
 struct DeckSwitchVars { fs::path pendingPath; };
 
+struct EditorPerfVars { bool typing = false; };
+struct CommentTestVars { TextEditor editor; };
+struct NativeImeVars { bool requestFocus = false; bool nativeFocus = false; };
+
+static ImGuiWindow* EditorWindow() {
+    for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
+        if (strstr(window->Name, "/editor_")) return window;
+    return nullptr;
+}
+
+static void NativeImeGui(ImGuiTestContext* ctx) {
+#if PLATFORM_WINDOWS
+    auto& vars = ctx->GetVars<NativeImeVars>();
+    if (vars.requestFocus) {
+        vars.requestFocus = false;
+        // The engine's viewport-focus operation is skipped in single-window
+        // mode. SDL video operations also need the main (GuiFunc) thread.
+        const char* previous = SDL_GetHint(SDL_HINT_FORCE_RAISEWINDOW);
+        bool hadPrevious = previous != nullptr;
+        std::string previousValue = previous ? previous : "";
+        SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, "1");
+        SDL_Window* window = SDL_GetWindowFromID((SDL_WindowID)(intptr_t)ImGui::GetMainViewport()->PlatformHandle);
+        bool raised = window && SDL_RaiseWindow(window);
+        if (hadPrevious) SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, previousValue.c_str());
+        else SDL_ResetHint(SDL_HINT_FORCE_RAISEWINDOW);
+        IM_CHECK(raised);
+    }
+    vars.nativeFocus = GetFocus() == static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);
+#endif
+}
+
+static void FocusNativeTestWindow(ImGuiTestContext* ctx) {
+    ctx->GetVars<NativeImeVars>().requestFocus = true;
+    ctx->Yield(3);
+}
+
 void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
+    // PerfCapture writes frame times to Test Engine's CSV format. Zero reference
+    // records total application frame time (the app GUI is outside GuiFunc).
+    for (const char* name : {"source_top", "source_middle", "large_middle", "large_typing", "markdown_unfinished_links_typing"}) {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "perf", name);
+        t->UserData = app;
+        t->SetVarsDataType<EditorPerfVars>();
+        t->GuiFunc = [](ImGuiTestContext* ctx) {
+            if (ctx->GetVars<EditorPerfVars>().typing)
+                ImGui::GetIO().InputQueueCharacters.push_back(0x4e2d);
+        };
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+            App& a = *(App*)ctx->Test->UserData;
+            std::string original = a.editor.GetText();
+            bool large = strstr(ctx->Test->Name, "large") != nullptr;
+            if (large) {
+                std::string text = "---\nmarp: true\n---\n";
+                for (int i = 0; i < 10000; ++i)
+                    text += "Markdown performance: \xe4\xb8\xad\xe6\x96\x87 **bold**, [link](test), words and text.\n";
+                a.editor.SetText(text);
+            }
+            if (strstr(ctx->Test->Name, "unfinished")) {
+                std::string text;
+                for (int i = 0; i < 5000; ++i) text += "[unfinished ";
+                a.editor.SetText(text);
+            }
+            ctx->Yield(large ? 100 : 8); // finish bounded initial colorization/font uploads
+            ImGuiWindow* window = EditorWindow();
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            a.editor.SetCursorPosition({strstr(ctx->Test->Name, "top") ? 0 : a.editor.GetTotalLines() / 2, 0});
+            a.editor.SetSelection(a.editor.GetCursorPosition(), a.editor.GetCursorPosition());
+            ctx->Yield(8); // settle scrolling
+            ctx->GetVars<EditorPerfVars>().typing = strstr(ctx->Test->Name, "typing") != nullptr;
+            size_t bytesBefore = a.editor.GetText().size();
+            ctx->PerfIterations = 200;
+            ctx->PerfRefDt = 0.0;
+            const char* csv = std::getenv("MARP_GUI_PERF_CSV");
+            ctx->PerfCapture(nullptr, nullptr, csv ? csv : "marp_gui_perf.csv");
+            if (ctx->GetVars<EditorPerfVars>().typing)
+                IM_CHECK_EQ(a.editor.GetText().size(), bytesBefore + 3 * ctx->PerfIterations);
+            ctx->GetVars<EditorPerfVars>().typing = false;
+            a.editor.SetText(original);
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.SetSelection({0, 0}, {0, 0});
+            a.buildScheduled = false;
+        };
+    }
+    {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "marp_gui", "reload_keeps_caret_selection_and_scroll");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+            App& a = *(App*)ctx->Test->UserData;
+            std::string original = a.editor.GetText();
+            bool autosave = a.autosave;
+            a.autosave = false;
+            std::string text = "---\nmarp: true\n---\n";
+            for (int i = 0; i < 200; ++i) text += "line of text\n";
+            a.editor.SetText(text);
+            ctx->Yield(3);
+            ImGuiWindow* window = EditorWindow();
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            a.editor.SetCursorPosition({100, 3});
+            a.editor.SetSelection({100, 3}, {100, 3});
+            ctx->KeyChars("x");
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_S);
+            a.editor.SetSelection({100, 0}, {100, 3});
+            ctx->Yield(3);
+            auto caret = a.editor.GetCursorPosition();
+            auto selection = a.editor.GetSelectedText();
+            float scroll = window->Scroll.y;
+            IM_CHECK(scroll > 0);
+            IM_CHECK(a.editor.CanUndo());
+            auto changeTime = [&] {
+                fs::last_write_time(a.deckPath, fs::last_write_time(a.deckPath) + std::chrono::seconds(2));
+                a.lastMtimePoll = std::chrono::steady_clock::now();
+            };
+            // Cloud sync / timestamp-only changes must not reload or erase undo.
+            changeTime();
+            IM_CHECK(!PollDeckChanges(a));
+            ctx->Yield(3);
+            IM_CHECK(a.editor.GetCursorPosition() == caret);
+            IM_CHECK(a.editor.GetSelectedText() == selection);
+            IM_CHECK_EQ(window->Scroll.y, scroll);
+            IM_CHECK(a.editor.CanUndo());
+
+            std::string saved = a.lastDiskText;
+            std::string external = saved + "external edit\n";
+            std::ofstream(a.deckPath, std::ios::binary | std::ios::trunc) << external;
+            changeTime();
+            a.dirtySinceLastSave = true;
+            IM_CHECK(!PollDeckChanges(a));
+            IM_CHECK(a.editor.GetText() == saved);
+            a.dirtySinceLastSave = false;
+            a.editor.SetImeComposing(true);
+            IM_CHECK(!PollDeckChanges(a));
+            a.editor.SetImeComposing(false);
+            IM_CHECK(PollDeckChanges(a));
+            ctx->Yield(3);
+            IM_CHECK(a.editor.GetText().find("external edit") != std::string::npos);
+            IM_CHECK(a.editor.GetCursorPosition() == caret);
+            IM_CHECK(a.editor.GetSelectedText() == selection);
+            IM_CHECK_EQ(window->Scroll.y, scroll);
+            a.editor.SetText(original);
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.SetSelection({0, 0}, {0, 0});
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_S);
+            a.autosave = autosave;
+        };
+    }
+    {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "marp_gui", "incremental_comment_highlighting");
+        t->SetVarsDataType<CommentTestVars>();
+        t->GuiFunc = [](ImGuiTestContext* ctx) {
+            ImGui::SetNextWindowPos({20, 40});
+            ImGui::SetNextWindowSize({500, 400});
+            ImGui::Begin("comment-test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+            ctx->GetVars<CommentTestVars>().editor.Render("comment-editor");
+            ImGui::End();
+        };
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+            auto& editor = ctx->GetVars<CommentTestVars>().editor;
+            editor.SetLanguageDefinition(markdown_lang::Markdown());
+            editor.SetPalette(TextEditor::GetProgrammerPalette());
+            editor.SetText("<!--\n\xe4\xb8\xad\xe6\x96\x87 comment\n-->\nplain");
+            editor.SetCursorPosition({0, 0});
+            ctx->Yield(3);
+            ImGuiWindow* window = nullptr;
+            for (auto* w : ImGui::GetCurrentContext()->Windows)
+                if (strstr(w->Name, "/comment-editor_")) window = w;
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            ctx->Yield(2);
+            ImVec2 origin = editor.GetCaretScreenPos();
+            float height = editor.GetCaretHeight();
+            ImU32 comment = editor.GetPalette()[(int)TextEditor::PaletteIndex::MultiLineComment];
+            auto hasComment = [&](int line) {
+                float y = origin.y + line * height;
+                for (const auto& v : window->DrawList->VtxBuffer)
+                    if (v.col == comment && v.pos.y >= y && v.pos.y < y + height) return true;
+                return false;
+            };
+            IM_CHECK(hasComment(1));
+            IM_CHECK(!hasComment(3));
+            editor.SetSelection({2, 0}, {2, 3});
+            editor.Delete(); // removing the close must propagate past the dirty line
+            ctx->Yield(3);
+            IM_CHECK(hasComment(3));
+            editor.SetCursorPosition({2, 0});
+            editor.InsertText("-->");
+            ctx->Yield(3);
+            IM_CHECK(!hasComment(3));
+            // Equal line count must invalidate state; insertion must realign it.
+            editor.SetText("plain\nplain\nplain\nplain");
+            ctx->Yield(3);
+            IM_CHECK(!hasComment(1));
+            editor.SetCursorPosition({0, 0});
+            editor.InsertText("<!--\n");
+            ctx->Yield(3);
+            IM_CHECK(hasComment(1));
+        };
+    }
+    {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "marp_gui", "incremental_slide_map");
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+            TextEditor editor;
+            for (const char* text : {"", "# no front matter\n---\ntext", "---\nmarp: true\n---\n# title\n---\ntext", "---\r\nmarp: true\r\n---\r\ntext\r\n \t---\t \r\nnext"}) {
+                editor.SetText(text);
+                IM_CHECK(SlideStarts(editor) == SlideStarts(text));
+            }
+            editor.SetText("---\nmarp: true\n---\ntext\nnext");
+            editor.SetCursorPosition({4, 0});
+            editor.InsertText("---\n");
+            IM_CHECK(SlideStarts(editor) == SlideStarts(editor.GetText()));
+            editor.SetSelection({4, 0}, {5, 0});
+            editor.Delete();
+            IM_CHECK(SlideStarts(editor) == SlideStarts(editor.GetText()));
+        };
+    }
     {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_color_scheme_persistence");
         t->UserData = app;
@@ -106,6 +321,61 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
             restored.Clear();
             recent.Load(dir / "history.txt");
             IM_CHECK(recent.Paths().empty());
+        };
+    }
+    {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "marp_gui", "markdown_native_scanner");
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+            using Color = TextEditor::PaletteIndex;
+            const auto& language = markdown_lang::Markdown();
+            IM_CHECK(language.mColorizeLine != nullptr);
+            IM_CHECK(language.mTokenRegexStrings.empty());
+            for (const auto& segments : {
+                std::vector<std::pair<const char*, Color>>{{"# heading", Color::Keyword}},
+                std::vector<std::pair<const char*, Color>>{{"####", Color::Punctuation}, {"plain", Color::Default}},
+                std::vector<std::pair<const char*, Color>>{{"-", Color::Preprocessor}, {" item ", Color::Default}, {"**", Color::Punctuation}, {"bold", Color::Default}, {"**", Color::Punctuation}},
+                std::vector<std::pair<const char*, Color>>{{"42.", Color::Preprocessor}, {" item", Color::Default}},
+                std::vector<std::pair<const char*, Color>>{{"marp:", Color::KnownIdentifier}, {" true :smile: ", Color::Default}, {"`code`", Color::String}},
+                std::vector<std::pair<const char*, Color>>{{"[text](url)", Color::Identifier}, {" ", Color::Default}, {"![alt](image.png)", Color::Identifier}},
+                std::vector<std::pair<const char*, Color>>{{"[", Color::Identifier}, {"unfinished ", Color::Default}, {"[", Color::Identifier}, {"link", Color::Default}},
+                std::vector<std::pair<const char*, Color>>{{"<!-- comment -->", Color::Comment}, {" plain", Color::Default}},
+                std::vector<std::pair<const char*, Color>>{{"> quote", Color::Comment}},
+                std::vector<std::pair<const char*, Color>>{{"\xe4\xb8\xad\xe6\x96\x87 \t text", Color::Default}}
+            }) {
+                TextEditor::Line line;
+                std::vector<Color> expected;
+                for (const auto& segment : segments) {
+                    for (const char* p = segment.first; *p; ++p) {
+                        line.emplace_back((unsigned char)*p, Color::Keyword);
+                        line.back().mMultiLineComment = true;
+                        expected.push_back(segment.second);
+                    }
+                }
+                language.mColorizeLine(line);
+                for (size_t i = 0; i < line.size(); ++i) {
+                    IM_CHECK(line[i].mColorIndex == expected[i]);
+                    IM_CHECK(line[i].mMultiLineComment); // native path preserves block tracking
+                }
+            }
+            TextEditor::Line empty;
+            language.mColorizeLine(empty);
+            // The token API accepts bounded spans, including non-terminated data.
+            // Closers outside the span must never extend the returned token.
+            const char raw[] = {'[', 'a', ']', '(', 'b', ')'};
+            const char* begin = nullptr; const char* end = nullptr;
+            Color color = Color::Default;
+            IM_CHECK(language.mTokenize(raw, raw + 2, begin, end, color));
+            IM_CHECK(end <= raw + 2);
+            IM_CHECK(language.mTokenize(raw, raw + 5, begin, end, color));
+            IM_CHECK(end == raw + 3);
+            const char comment[] = {'<', '!', '-', '-', '-', '-', '>'};
+            IM_CHECK(language.mTokenize(comment, comment + 4, begin, end, color));
+            IM_CHECK(end == comment + 4);
+            IM_CHECK(!language.mTokenize(raw, raw, begin, end, color));
+            const char hashes[] = {'#', '#', '#', '#', 'x'};
+            IM_CHECK(language.mTokenize(hashes, hashes + 5, begin, end, color));
+            IM_CHECK(end == hashes + 4);
+            IM_CHECK(color == Color::Punctuation);
         };
     }
     {
@@ -310,6 +580,89 @@ Vibe Coding 人手一套定制化工具 :ok:
         };
     }
     {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "marp_gui", "editor_word_navigation_boundaries");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+            App& a = *(App*)ctx->Test->UserData;
+            std::string original = a.editor.GetText();
+            bool autosave = a.autosave;
+            a.autosave = false;
+            ImGuiWindow* window = EditorWindow();
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            a.editor.SetText("dd\n\n---\n\n<!-- _header: \xe6\x95\xb0\xe6\x8d\xae -->");
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.SetSelection({0, 0}, {0, 0});
+            ctx->Yield(3);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(0, 2));
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(1, 0));
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(2, 0));
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(2, 3));
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_LeftArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(2, 0));
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_LeftArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(1, 0));
+            a.editor.SetCursorPosition({4, 0});
+            a.editor.SetSelection({4, 0}, {4, 0});
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(4, 4));
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(4, 12));
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_LeftArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(4, 5));
+            // Each move has an exact anchor, independent of highlighting colors.
+            a.editor.SetCursorPosition({0, 1});
+            a.editor.SetSelection({0, 1}, {0, 1});
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_RightArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(0, 2));
+            IM_CHECK(a.editor.GetSelectedText() == "d");
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_RightArrow);
+            IM_CHECK(a.editor.GetCursorPosition() == TextEditor::Coordinates(1, 0));
+            IM_CHECK(a.editor.GetSelectedText() == "d\n");
+
+            a.editor.SetText("foo_bar  \xe4\xb8\xad\xe6\x96\x87!! next");
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.SetSelection({0, 0}, {0, 0});
+            ctx->Yield(3);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 7);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 11);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_RightArrow);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 13);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_LeftArrow);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 11);
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_LeftArrow);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 9);
+            IM_CHECK(a.editor.GetSelectedText() == "\xe4\xb8\xad\xe6\x96\x87");
+            a.editor.SetColorizerEnable(false);
+            a.editor.SetSelection({0, 0}, {0, 0});
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.MoveRight(3, false, true);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 13);
+            a.editor.MoveLeft(3, false, true);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 0);
+            a.editor.SetText("one\t\xe4\xb8\xad\xe6\x96\x87");
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.MoveRight(2, false, true);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 6);
+            a.editor.MoveRight(1, false, true); // end of document
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 6);
+            a.editor.MoveLeft(2, false, true);
+            IM_CHECK_EQ(a.editor.GetCursorPosition().mColumn, 0);
+            a.editor.SetColorizerEnable(true);
+            a.editor.SetText(original);
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.SetSelection({0, 0}, {0, 0});
+            a.buildScheduled = false;
+            a.autosave = autosave;
+        };
+    }
+    {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_navigation_and_tabs");
         t->UserData = app;
         t->TestFunc = [](ImGuiTestContext *ctx) {
@@ -382,6 +735,8 @@ Vibe Coding 人手一套定制化工具 :ok:
     {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_word_delete_and_ime");
         t->UserData = app;
+        t->SetVarsDataType<NativeImeVars>();
+        t->GuiFunc = NativeImeGui;
         t->TestFunc = [](ImGuiTestContext *ctx) {
             App &a = *(App *)ctx->Test->UserData;
             std::string before = a.editor.GetText();
@@ -391,6 +746,9 @@ Vibe Coding 人手一套定制化工具 :ok:
             for (ImGuiWindow *w : ImGui::GetCurrentContext()->Windows)
                 if (strstr(w->Name, "/editor_")) window = w;
             IM_CHECK(window != nullptr);
+#if PLATFORM_WINDOWS
+            FocusNativeTestWindow(ctx);
+#endif
             ctx->WindowFocus(window->ID);
             a.editor.SetText("one two");
             a.editor.SetCursorPosition({0, 7});
@@ -435,6 +793,36 @@ Vibe Coding 人手一套定制化工具 :ok:
             a.editor.SetSelection({0, 0}, {0, 0});
             a.editor.SetCursorPosition({0, 0});
             a.autosave = autosave;
+        };
+    }
+    {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "marp_gui", "ime_preedit_frame_pacing");
+        t->UserData = app;
+        t->SetVarsDataType<NativeImeVars>();
+        t->GuiFunc = NativeImeGui;
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+#if PLATFORM_WINDOWS
+            App& a = *(App*)ctx->Test->UserData;
+            ImGuiWindow* window = EditorWindow();
+            IM_CHECK(window != nullptr);
+            FocusNativeTestWindow(ctx);
+            ctx->WindowFocus(window->ID);
+            ctx->Yield(3);
+            a.editor.SetImeComposing(true);
+            ctx->Yield(3);
+            double elapsed = 0;
+            for (int i = 0; i < 16; ++i) {
+                ctx->Yield();
+                elapsed += ctx->UiContext->IO.DeltaTime;
+            }
+            a.editor.SetImeComposing(false);
+            bool focus = ctx->GetVars<NativeImeVars>().nativeFocus;
+            const auto* mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+            double refresh = mode && mode->refresh_rate > 0 ? mode->refresh_rate : 60.0;
+            ctx->LogInfo("Native focus=%d, composing display frame %.2f ms, refresh %.1f Hz", focus, elapsed * 1000 / 16, refresh);
+            IM_CHECK(focus);
+            IM_CHECK(elapsed / 16 >= 0.7 / refresh); // no unbounded redraw during preedit
+#endif
         };
     }
     {
@@ -669,6 +1057,29 @@ Vibe Coding 人手一套定制化工具 :ok:
             IM_CHECK_EQ(a.viewSlide, (int)a.slides.size() - 1);
             SetViewSlide(a, -1);
             IM_CHECK_EQ(a.viewSlide, 0);
+
+            ImGuiWindow* window = EditorWindow();
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            a.editor.SetCursorPosition({a.slideStarts[1], 0});
+            a.editor.SetSelection({a.slideStarts[1], 0}, {a.slideStarts[1], 0});
+            ctx->KeyChars("x");
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_S);
+            a.editor.SetSelection({a.slideStarts[1], 0}, {a.slideStarts[1], 1});
+            auto caret = a.editor.GetCursorPosition();
+            auto selection = a.editor.GetSelectedText();
+            ctx->Yield(3);
+            float scroll = window->Scroll.y;
+            auto revision = a.previewRevision;
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+            while (a.previewRevision == revision && std::chrono::steady_clock::now() < deadline) ctx->Yield();
+            IM_CHECK(a.previewRevision > revision);
+            IM_CHECK(a.editor.GetCursorPosition() == caret);
+            IM_CHECK(a.editor.GetSelectedText() == selection);
+            IM_CHECK_EQ(window->Scroll.y, scroll);
+            IM_CHECK(a.editor.CanUndo());
+            a.editor.Undo();
+            ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_S);
         };
     }
 
@@ -767,18 +1178,85 @@ Vibe Coding 人手一套定制化工具 :ok:
                 fs::path output = a.deckPath;
                 output.replace_extension(std::string(".") + format);
                 ExportDeck(a, format);
+                IM_CHECK(a.exportPhase == ExportPhase::Running);
+                IM_CHECK(a.showExportDialog);
+                ctx->Yield(3);
+                ctx->SetRef("Export##modal");
+                IM_CHECK(ctx->ItemExists("Run in background"));
+                auto speed = ctx->EngineIO->ConfigRunSpeed;
+                ctx->EngineIO->ConfigRunSpeed = ImGuiTestRunSpeed_Fast;
+                ctx->ItemClick("Run in background");
+                ctx->EngineIO->ConfigRunSpeed = speed;
+                IM_CHECK(!a.showExportDialog);
                 auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
-                while (a.status != "exported " + output.filename().string() &&
-                       a.status.rfind("export ", 0) != 0 &&
-                       std::chrono::steady_clock::now() < deadline) ctx->Yield();
-                IM_CHECK(a.status == "exported " + output.filename().string());
+                while (a.exportPhase == ExportPhase::Running && std::chrono::steady_clock::now() < deadline) ctx->Yield();
+                IM_CHECK(a.exportPhase == ExportPhase::Succeeded);
+                IM_CHECK(a.exportPath == output);
+                IM_CHECK(a.exportError.empty());
+                IM_CHECK(a.showExportDialog);
                 IM_CHECK(fs::exists(output));
                 IM_CHECK(fs::file_size(output) > 100);
                 std::ifstream in(output, std::ios::binary);
                 char header[5] = {}; in.read(header, 4);
                 if (std::string(format) == "pdf") IM_CHECK(std::string(header, 4) == "%PDF");
                 if (std::string(format) == "pptx") IM_CHECK(std::string(header, 2) == "PK");
+                ctx->Yield(3);
+                IM_CHECK(ctx->ItemExists("Open containing folder"));
+                ctx->ItemClick("Close");
+                IM_CHECK(!a.showExportDialog);
             }
+        };
+    }
+    {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "marp_gui", "export_failures_show_result");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+            App& a = *(App*)ctx->Test->UserData;
+            fs::path runner = a.runtimeDir / "failed-export-cli";
+            fs::create_directories(runner);
+#if PLATFORM_WINDOWS
+            fs::path executable = runner / "marp.cmd";
+            std::ofstream(executable) << "@echo off\necho Export fixture failure 1>&2\nexit /b 7\n";
+#else
+            fs::path executable = runner / "marp";
+            std::ofstream(executable) << "#!/bin/sh\necho 'Export fixture failure' >&2\nexit 7\n";
+            fs::permissions(executable, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+#endif
+            ExportDeck(a, "html", {executable.string()});
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+            while (a.exportPhase == ExportPhase::Running && std::chrono::steady_clock::now() < deadline) ctx->Yield();
+            IM_CHECK(a.exportPhase == ExportPhase::Failed);
+            IM_CHECK(a.exportError.find("Export fixture failure") != std::string::npos);
+            IM_CHECK(a.exportPath.extension() == ".html");
+            IM_CHECK(a.showExportDialog);
+            ctx->Yield(3);
+            ctx->SetRef("Export##modal");
+            IM_CHECK(ctx->ItemExists("Open containing folder"));
+            ctx->ItemClick("Close");
+
+            fs::path original = a.deckPath;
+            a.deckPath = a.runtimeDir / "missing-export-folder" / "deck.md";
+            ExportDeck(a, "pdf");
+            a.deckPath = original;
+            IM_CHECK(a.exportPhase == ExportPhase::Failed);
+            IM_CHECK(!a.exportError.empty());
+            IM_CHECK(a.exportPath.filename() == "deck.pdf");
+            IM_CHECK(a.showExportDialog);
+            ctx->Yield(3);
+            ctx->ItemClick("Close");
+            IM_CHECK(!a.showExportDialog);
+            a.lastError.clear();
+        };
+    }
+    {
+        ImGuiTest* t = IM_REGISTER_TEST(engine, "marp_gui", "export_folder_url");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext* ctx) {
+            App& a = *(App*)ctx->Test->UserData;
+            std::string url = ExportFolderURL(a.runtimeDir / "export folder #1% +\xe4\xb8\xad\xe6\x96\x87" / "deck.pdf");
+            IM_CHECK(url.rfind("file://", 0) == 0);
+            IM_CHECK(url.find("/export%20folder%20%231%25%20%2B%E4%B8%AD%E6%96%87") != std::string::npos);
+            IM_CHECK(url.find("deck.pdf") == std::string::npos);
         };
     }
     {

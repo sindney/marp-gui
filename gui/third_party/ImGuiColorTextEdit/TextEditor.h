@@ -153,6 +153,9 @@ public:
 		typedef std::pair<std::string, PaletteIndex> TokenRegexString;
 		typedef std::vector<TokenRegexString> TokenRegexStrings;
 		typedef bool(*TokenizeCallback)(const char * in_begin, const char * in_end, const char *& out_begin, const char *& out_end, PaletteIndex & paletteIndex);
+		// Optional native line scanner: writes colors directly without a string
+		// copy, regex fallback, or C/C++ identifier lookup. Keep comment flags.
+		typedef void(*ColorizeLineCallback)(Line& line);
 
 		std::string mName;
 		Keywords mKeywords;
@@ -163,13 +166,14 @@ public:
 		bool mAutoIndentation;
 
 		TokenizeCallback mTokenize;
+		ColorizeLineCallback mColorizeLine;
 
 		TokenRegexStrings mTokenRegexStrings;
 
 		bool mCaseSensitive;
 
 		LanguageDefinition()
-			: mPreprocChar('#'), mAutoIndentation(true), mTokenize(nullptr), mCaseSensitive(true)
+			: mPreprocChar('#'), mAutoIndentation(true), mTokenize(nullptr), mColorizeLine(nullptr), mCaseSensitive(true)
 		{
 		}
 
@@ -203,6 +207,9 @@ public:
 
 	std::string GetSelectedText() const;
 	std::string GetCurrentLineText()const;
+	bool IsLineSeparator(int line) const;
+	// Reload the same document while keeping the user's viewport and selection.
+	void ReplaceTextPreservingView(const std::string& text);
 
 	int GetTotalLines() const { return (int)mLines.size(); }
 	bool IsOverwrite() const { return mOverwrite; }
@@ -339,7 +346,8 @@ private:
 	Coordinates ScreenPosToCoordinates(const ImVec2& aPosition) const;
 	Coordinates FindWordStart(const Coordinates& aFrom) const;
 	Coordinates FindWordEnd(const Coordinates& aFrom) const;
-	Coordinates FindNextWord(const Coordinates& aFrom) const;
+	Coordinates FindWordRight(const Coordinates& aFrom) const;
+	Coordinates FindWordLeft(const Coordinates& aFrom) const;
 	int GetCharacterIndex(const Coordinates& aCoordinates) const;
 	int GetCharacterColumn(int aLine, int aIndex) const;
 	int GetLineCharacterCount(int aLine) const;
@@ -392,6 +400,16 @@ private:
 	RegexList mRegexList;
 
 	bool mCheckComments;
+	struct CommentState {
+		bool block = false, string = false, single = false, preproc = false;
+		bool concatenate = false, firstChar = true;
+		bool operator==(const CommentState& other) const {
+			return block == other.block && string == other.string && single == other.single &&
+				preproc == other.preproc && concatenate == other.concatenate && firstChar == other.firstChar;
+		}
+	};
+	std::vector<CommentState> mCommentStates;
+	int mCommentRangeMin = 0, mCommentRangeMax = 0;
 	Breakpoints mBreakpoints;
 	ErrorMarkers mErrorMarkers;
 	ImVec2 mCharAdvance;

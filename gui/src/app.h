@@ -17,6 +17,7 @@ namespace fs = std::filesystem;
 // Opaque to the tests; defined in main.cpp.
 class BuildWorker;
 struct SlideTexture;
+enum class ExportPhase { Idle, Running, Succeeded, Failed };
 
 struct App {
     TextEditor editor;
@@ -45,7 +46,13 @@ struct App {
 
     std::string status = "ready";
     std::string lastError;
+    ExportPhase exportPhase = ExportPhase::Idle;
+    fs::path exportPath;
+    std::string exportError;
+    std::string exportFolderError;
+    bool showExportDialog = false;
     fs::file_time_type lastWriteTime{};
+    std::string lastDiskText;                 // distinguish content changes from timestamp-only writes
     std::chrono::steady_clock::time_point lastMtimePoll{};
 
     // --- App shell additions ---------------------------------------------------
@@ -60,19 +67,24 @@ struct App {
     int marpThemeIndex = 0;                   // index into marpThemes
     std::vector<std::string> marpThemes;      // stems of themes/*.css
     unsigned long long buildGeneration = 0;   // bumped on deck/theme switch; stale results dropped
+    unsigned long long previewRevision = 0;   // completed texture sets, for refresh regression tests
 
     bool requestExit = false;
+    bool performanceMode = false;             // isolated editor benchmarks, no browser builds
 };
 
 // Slide map helpers (defined in main.cpp).
 std::vector<int> SlideStarts(const std::string &text);
+std::vector<int> SlideStarts(const TextEditor &editor);
 int SlideForLine(const std::vector<int> &starts, int line);
 
 // Deck lifecycle (defined in main.cpp).
 void LoadDeck(App &app);
 void SwitchDeck(App &app);
 bool OpenDeck(App &app, const fs::path &path);
-void ExportDeck(App &app, const std::string &format);
+bool PollDeckChanges(App &app);
+void ExportDeck(App &app, const std::string &format, const std::vector<std::string> &command = {});
+std::string ExportFolderURL(const fs::path &output);
 bool PreviewReady(const App &app);
 
 // Unified slide navigation: set the viewed slide (clamped) and request the

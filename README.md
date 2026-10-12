@@ -30,6 +30,9 @@ the `.app` or just the `.exe`. Node/Marp and the browser remain required.
 Use **Cmd** on macOS or **Ctrl** on Windows: **S** saves, **O** opens,
 **P** opens commands, **Z** undoes, and **Shift+Z** redoes.
 File → Export produces PDF, PPTX, or HTML beside the deck.
+The export dialog shows progress, then success or failure and the full output
+path. **Open containing folder** opens the result's folder. **Run in background**
+lets you keep editing; the dialog returns when the export finishes.
 
 File → Open Recent and the command palette show the five most recently
 opened decks. The list persists across restarts; **Clear Recent** clears it.
@@ -45,6 +48,30 @@ restarts. **UI Theme** controls the application menus and panels separately.
 **Settings → Use spaces for tabs** to insert literal tabs. **Shift+Tab**
 unindents the current line or selected lines; **Shift+Backspace** and
 **Ctrl+Backspace** delete the preceding word.
+**Ctrl+Left/Right** move by word or punctuation group, stopping at line breaks.
+Hold **Shift** as well to select exactly the text traversed.
+
+The test executable also supports `--perf`, using Dear ImGui Test Engine's
+performance capture and CSV format:
+
+```sh
+gui/build/Release/marp_gui_tests --perf --test-deck slides.md
+```
+
+Use `gui/build/marp_gui_tests` with a single-configuration generator. Results
+append to `marp_gui_perf.csv` in the current directory; set `MARP_GUI_PERF_CSV`
+to choose another output file. Benchmarks measure total frame time with vsync
+disabled, for the supplied deck and a 10,000-line Chinese/English document,
+including committed Chinese input and a long line of unfinished links. Preview
+builds are disabled during these editor benchmarks. Tests use a temporary deck copy.
+Use `--test-filter substring` to run matching test names or categories.
+
+Markdown highlighting uses a native scanner directly on the editor's glyph
+buffer, with no text copies, regex, or identifier-table lookups. Plain Chinese
+text is scanned in runs, and unfinished link searches take linear time.
+
+On Windows, focused text input pumps native IME messages between display
+frames while drawing at the monitor's refresh rate.
 
 ## Thanks
 
