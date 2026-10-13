@@ -82,7 +82,7 @@ private:
     TextEditor* mEditor = nullptr;
 #if PLATFORM_WINDOWS
     void PositionCompositionWindow() {
-        if (!mWindow || !mImeVisible) return;
+        if (!mWindow) return;
         HIMC context = ImmGetContext(mWindow);
         if (!context) return;
         COMPOSITIONFORM current{};
@@ -97,7 +97,9 @@ private:
     static void ImeCallback(ImGuiContext* ctx, ImGuiViewport* viewport, ImGuiPlatformImeData* data) {
         auto& state = *sActive;
         if (state.mImeCallback) state.mImeCallback(ctx, viewport, data);
-        state.mImeVisible = data->WantVisible;
+        // WantVisible alone only means a widget accepts text; plain mouse use
+        // would otherwise hold fast polling on and starve display frames.
+        state.mImeVisible = data->WantVisible && state.mEditor->IsImeComposing();
         state.mCompositionForm = {};
         state.mCompositionForm.dwStyle = CFS_POINT;
         state.mCompositionForm.ptCurrentPos.x = (LONG)(data->InputPos.x - viewport->Pos.x);

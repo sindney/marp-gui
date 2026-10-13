@@ -857,7 +857,8 @@ int main(int argc, char *argv[]) {
         if (fastImePolling && !app.performanceMode) {
             auto pumpTime = std::chrono::steady_clock::now();
             if (pumpTime < nextDisplayFrame) {
-                SDL_Delay(1);
+                // No sleeping: a held key with a quiet mouse would otherwise
+                // starve frames and swallow click edges (shift-click select).
                 continue;
             }
             nextDisplayFrame = pumpTime + displayPeriod;

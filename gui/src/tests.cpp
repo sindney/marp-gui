@@ -449,6 +449,55 @@ void RegisterMarpGuiTests(ImGuiTestEngine *engine, App *app) {
         };
     }
     {
+        ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_shift_click_selection");
+        t->UserData = app;
+        t->TestFunc = [](ImGuiTestContext *ctx) {
+            App &a = *(App *)ctx->Test->UserData;
+            std::string before = a.editor.GetText();
+            bool autosave = a.autosave;
+            a.autosave = false;
+            ImGuiWindow *window = nullptr;
+            for (ImGuiWindow *w : ImGui::GetCurrentContext()->Windows)
+                if (strstr(w->Name, "/editor_")) window = w;
+            IM_CHECK(window != nullptr);
+            ctx->WindowFocus(window->ID);
+            a.editor.SetText("selection visible\nsecond line");
+            a.editor.SetCursorPosition({0, 0});
+            a.editor.SetSelection({0, 0}, {0, 0});
+            ctx->Yield(3);
+            ImVec2 origin = a.editor.GetCaretScreenPos();
+            float height = a.editor.GetCaretHeight();
+            auto columnX = [&](const char *prefix) {
+                return ImGui::GetIO().Fonts->Fonts[0]->CalcTextSizeA(height, FLT_MAX, -1.0f, prefix).x;
+            };
+            // Drag over "selection", then shift-click into "second line".
+            ctx->MouseMoveToPos(ImVec2(origin.x + 1.0f, origin.y + 3.0f));
+            ctx->MouseDown();
+            ctx->MouseMoveToPos(ImVec2(origin.x + columnX("selection"), origin.y + 3.0f));
+            ctx->MouseUp();
+            ctx->Yield(2);
+            IM_CHECK(a.editor.GetSelectedText() == "selection");
+            ImVec2 shiftClick(origin.x + columnX("second"), origin.y + height + 3.0f);
+            ctx->MouseMoveToPos(shiftClick);
+            ctx->KeyDown(ImGuiMod_Shift);
+            ctx->MouseClick(0);
+            ctx->KeyUp(ImGuiMod_Shift);
+            ctx->Yield(2);
+            IM_CHECK(a.editor.GetSelectedText() == "selection visible\nsecond");
+            // Shift-clicking back into the first word shrinks from the anchor.
+            ctx->MouseMoveToPos(ImVec2(origin.x + columnX("selec"), origin.y + 3.0f));
+            ctx->KeyDown(ImGuiMod_Shift);
+            ctx->MouseClick(0);
+            ctx->KeyUp(ImGuiMod_Shift);
+            ctx->Yield(2);
+            IM_CHECK(a.editor.GetSelectedText() == "selec");
+            a.editor.SetText(before);
+            a.editor.SetSelection({0, 0}, {0, 0});
+            a.editor.SetCursorPosition({0, 0});
+            a.autosave = autosave;
+        };
+    }
+    {
         ImGuiTest *t = IM_REGISTER_TEST(engine, "marp_gui", "editor_scrolled_selection");
         t->UserData = app;
         t->TestFunc = [](ImGuiTestContext *ctx) {

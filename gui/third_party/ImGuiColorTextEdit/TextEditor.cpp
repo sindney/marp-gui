@@ -781,7 +781,17 @@ void TextEditor::HandleMouseInputs()
 
 	if (ImGui::IsItemActive() || (ImGui::IsWindowHovered() && !ImGui::IsAnyItemActive()))
 	{
-		if (!shift && !alt)
+		if (shift && !ctrl && !alt)
+		{
+			// Shift-click extends the selection from its anchor.
+			if (ImGui::IsMouseClicked(0))
+			{
+				mState.mCursorPosition = mInteractiveEnd = ScreenPosToCoordinates(ImGui::GetMousePos());
+				if (mSelectionMode == SelectionMode::Normal)
+					SetSelection(mInteractiveStart, mInteractiveEnd, mSelectionMode);
+			}
+		}
+		else if (!shift && !alt)
 		{
 			auto click = ImGui::IsMouseClicked(0);
 			auto doubleClick = ImGui::IsMouseDoubleClicked(0);
