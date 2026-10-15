@@ -79,4 +79,6 @@ frames while drawing at the monitor's refresh rate.
 [Test Engine](https://github.com/ocornut/imgui_test_engine),
 [Marp CLI](https://github.com/marp-team/marp-cli), and
 [TheAncientOwl’s themes](https://github.com/ocornut/imgui/issues/707).
+The bundled `themes/programmer.css` Marp theme is modified from
+[marp-theme-academic](https://github.com/kaisugi/marp-theme-academic).
 Claude Code + Kimi K3.

@@ -1193,6 +1193,7 @@ int main(int argc, char *argv[]) {
             ImGui::TextUnformatted("Marp GUI");
             ImGui::TextDisabled("Native Marp slide editor with live preview.");
             ImGui::Separator();
+            ImGui::TextLinkOpenURL("marp-gui", "https://github.com/sindney/marp-gui");
             ImGui::TextLinkOpenURL("marp-cli", "https://github.com/marp-team/marp-cli");
             ImGui::TextLinkOpenURL("Dear ImGui", "https://github.com/ocornut/imgui");
             ImGui::TextLinkOpenURL("ImGuiColorTextEdit", "https://github.com/BalazsJako/ImGuiColorTextEdit");
